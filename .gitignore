@@ -1,0 +1,78 @@
+# OS
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# IDE / editors
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# .NET / Visual Studio
+**/bin/
+**/obj/
+**/out/
+.publish/
+*.dll
+*.pdb
+*.cache
+.vs/
+*.DotSettings.user
+
+# Node / npm / frontend
+**/node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+*.local
+
+# Vite / web build output
+**/dist/
+dist-ssr/
+
+# Expo / React Native (mobile)
+.expo/
+web-build/
+expo-env.d.ts
+.metro-health-check*
+.kotlin/
+*.tsbuildinfo
+apps/mobile/ios/
+apps/mobile/android/
+*.orig.*
+*.jks
+*.p8
+*.p12
+*.key
+*.mobileprovision
+
+# Environment & secrets (keep *.example tracked)
+.env
+.env.*
+!.env.example
+**/.env
+**/.env.*
+!**/.env.example
+
+# Logs & diagnostics
+*.log
+logs/
+
+# Docker (optional local overrides)
+docker-compose.override.yml
+
+# Test / coverage
+coverage/
+*.coverage
+.nyc_output/
+
+# Misc
+*.pem
+*.swp
+*~

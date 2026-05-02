@@ -1,0 +1,71 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: transport
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build:
+      context: .
+      dockerfile: docker/api/Dockerfile
+    ports:
+      - "5000:8080"
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      ASPNETCORE_URLS: http://+:8080
+      ConnectionStrings__DefaultConnection: Host=postgres;Port=5432;Database=transport;Username=postgres;Password=postgres
+      Jwt__Key: development-key-must-be-at-least-32-characters-long!
+      Jwt__Issuer: Transport
+      Jwt__Audience: Transport
+      Cors__Origins__0: http://localhost:3000
+      Cors__Origins__1: http://localhost:5173
+      Cors__Origins__2: http://localhost:8081
+      Cors__Origins__3: http://127.0.0.1:3000
+      Cors__Origins__4: http://127.0.0.1:5173
+      Cors__Origins__5: http://127.0.0.1:8081
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  web:
+    build:
+      context: .
+      dockerfile: docker/web/Dockerfile
+      args:
+        VITE_API_URL: http://localhost:5000
+        VITE_SIGNALR_URL: http://localhost:5000
+        VITE_GOOGLE_MAPS_API_KEY: ""
+    ports:
+      - "3000:80"
+    depends_on:
+      - api
+
+  mobile:
+    build:
+      context: .
+      dockerfile: docker/mobile/Dockerfile
+    ports:
+      - "8081:8081"
+      - "19000:19000"
+      - "19001:19001"
+      - "19002:19002"
+    environment:
+      EXPO_PUBLIC_API_URL: http://host.docker.internal:5000
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      - api
+
+volumes:
+  pgdata:
