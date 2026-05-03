@@ -35,10 +35,16 @@ public class TransportDbContext(DbContextOptions<TransportDbContext> options) : 
                 .OnDelete(DeleteBehavior.Cascade);
         });
 
+        modelBuilder.Entity<Branch>(entity =>
+        {
+            entity.HasIndex(b => b.Code).IsUnique();
+        });
+
         modelBuilder.Entity<Product>(entity =>
         {
             entity.HasIndex(p => p.TrackingNumber).IsUnique();
             entity.Property(p => p.Status).HasConversion<string>();
+            entity.Property(p => p.ShippingPrice).HasPrecision(18, 2);
             entity.HasOne(p => p.OriginBranch)
                 .WithMany(b => b.OriginProducts)
                 .HasForeignKey(p => p.OriginBranchId)

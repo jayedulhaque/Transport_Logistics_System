@@ -89,10 +89,97 @@ app.MapGet("/api/branches", async (TransportDbContext db) =>
 {
     var list = await db.Branches.AsNoTracking()
         .OrderBy(b => b.Code)
-        .Select(b => new { b.Id, b.BranchName, b.Code, b.Address })
+        .Select(b => new BranchDto(b.Id, b.BranchName, b.Code, b.Address))
         .ToListAsync();
     return Results.Ok(list);
 }).AllowAnonymous();
+
+app.MapPost("/api/branches", async (
+        UpsertBranchRequest body,
+        ClaimsPrincipal principal,
+        TransportDbContext db) =>
+    {
+        if (!principal.IsInRole(nameof(UserRole.Admin)))
+            return Results.Forbid();
+
+        var name = body.BranchName.Trim();
+        var code = body.Code.Trim();
+        var address = body.Address.Trim();
+        if (string.IsNullOrWhiteSpace(name) || string.IsNullOrWhiteSpace(code))
+            return Results.BadRequest(new { error = "Branch name and code are required." });
+
+        if (await db.Branches.AnyAsync(b => b.Code == code))
+            return Results.Conflict(new { error = "A branch with this code already exists." });
+
+        var branch = new Branch { BranchName = name, Code = code, Address = address };
+        db.Branches.Add(branch);
+        await db.SaveChangesAsync();
+
+        return Results.Created(
+            $"/api/branches/{branch.Id}",
+            new BranchDto(branch.Id, branch.BranchName, branch.Code, branch.Address));
+    })
+    .RequireAuthorization();
+
+app.MapPut("/api/branches/{id:int}", async (
+        int id,
+        UpsertBranchRequest body,
+        ClaimsPrincipal principal,
+        TransportDbContext db) =>
+    {
+        if (!principal.IsInRole(nameof(UserRole.Admin)))
+            return Results.Forbid();
+
+        var branch = await db.Branches.FirstOrDefaultAsync(b => b.Id == id);
+        if (branch is null)
+            return Results.NotFound();
+
+        var name = body.BranchName.Trim();
+        var code = body.Code.Trim();
+        var address = body.Address.Trim();
+        if (string.IsNullOrWhiteSpace(name) || string.IsNullOrWhiteSpace(code))
+            return Results.BadRequest(new { error = "Branch name and code are required." });
+
+        if (await db.Branches.AnyAsync(b => b.Code == code && b.Id != id))
+            return Results.Conflict(new { error = "A branch with this code already exists." });
+
+        branch.BranchName = name;
+        branch.Code = code;
+        branch.Address = address;
+        await db.SaveChangesAsync();
+
+        return Results.Ok(new BranchDto(branch.Id, branch.BranchName, branch.Code, branch.Address));
+    })
+    .RequireAuthorization();
+
+app.MapDelete("/api/branches/{id:int}", async (
+        int id,
+        ClaimsPrincipal principal,
+        TransportDbContext db) =>
+    {
+        if (!principal.IsInRole(nameof(UserRole.Admin)))
+            return Results.Forbid();
+
+        var branch = await db.Branches.FirstOrDefaultAsync(b => b.Id == id);
+        if (branch is null)
+            return Results.NotFound();
+
+        if (await db.Users.AnyAsync(u => u.BranchId == id))
+            return Results.BadRequest(new { error = "Cannot delete a branch that has users assigned." });
+
+        if (await db.Products.AnyAsync(p =>
+                p.OriginBranchId == id || p.DestinationBranchId == id || p.CurrentBranchId == id))
+            return Results.BadRequest(new { error = "Cannot delete a branch referenced by products." });
+
+        if (await db.Trips.AnyAsync(t => t.OriginBranchId == id || t.DestinationBranchId == id))
+            return Results.BadRequest(new { error = "Cannot delete a branch referenced by trips." });
+
+        db.Branches.Remove(branch);
+        await db.SaveChangesAsync();
+
+        return Results.NoContent();
+    })
+    .RequireAuthorization();
 
 app.MapPost("/api/auth/login", async (
         LoginRequest body,
@@ -298,12 +385,16 @@ app.MapPost("/api/products", async (
         ClaimsPrincipal principal,
         TransportDbContext db) =>
     {
-        if (!principal.IsInRole(nameof(UserRole.Staff)))
+        if (!principal.IsInRole(nameof(UserRole.Admin)))
             return Results.Forbid();
 
-        var branchClaim = principal.FindFirst(JwtClaims.BranchId)?.Value;
-        if (string.IsNullOrEmpty(branchClaim) || !int.TryParse(branchClaim, out var staffBranchId))
-            return Results.BadRequest(new { error = "Staff must belong to a branch." });
+        var originExists = await db.Branches.AnyAsync(b => b.Id == body.OriginBranchId);
+        var destExists = await db.Branches.AnyAsync(b => b.Id == body.DestinationBranchId);
+        if (!originExists || !destExists)
+            return Results.BadRequest(new { error = "Invalid origin or destination branch." });
+
+        if (body.ShippingPrice < 0)
+            return Results.BadRequest(new { error = "Shipping price cannot be negative." });
 
         var tracking = $"TN-{Guid.NewGuid():N}"[..18];
 
@@ -311,16 +402,17 @@ app.MapPost("/api/products", async (
         {
             Id = Guid.NewGuid(),
             TrackingNumber = tracking,
-            Description = body.Description,
-            SenderName = body.SenderName,
-            SenderPhone = body.SenderPhone,
-            SenderAddress = body.SenderAddress,
-            ReceiverName = body.ReceiverName,
-            ReceiverPhone = body.ReceiverPhone,
-            ReceiverAddress = body.ReceiverAddress,
-            OriginBranchId = staffBranchId,
+            Description = body.Description.Trim(),
+            SenderName = body.SenderName.Trim(),
+            SenderPhone = body.SenderPhone.Trim(),
+            SenderAddress = body.SenderAddress.Trim(),
+            ReceiverName = body.ReceiverName.Trim(),
+            ReceiverPhone = body.ReceiverPhone.Trim(),
+            ReceiverAddress = body.ReceiverAddress.Trim(),
+            ShippingPrice = body.ShippingPrice,
+            OriginBranchId = body.OriginBranchId,
             DestinationBranchId = body.DestinationBranchId,
-            CurrentBranchId = staffBranchId,
+            CurrentBranchId = body.OriginBranchId,
             Status = ProductStatus.Pending,
             CreatedAt = DateTime.UtcNow
         };
@@ -328,7 +420,101 @@ app.MapPost("/api/products", async (
         db.Products.Add(product);
         await db.SaveChangesAsync();
 
-        return Results.Ok(new ProductCreatedResponse(product.Id, product.TrackingNumber));
+        return Results.Ok(new ProductCreatedResponse(product.Id, product.TrackingNumber, product.ShippingPrice));
+    })
+    .RequireAuthorization();
+
+app.MapGet("/api/products", async (ClaimsPrincipal principal, TransportDbContext db) =>
+    {
+        if (!principal.IsInRole(nameof(UserRole.Admin)))
+            return Results.Forbid();
+
+        var list = await (
+            from p in db.Products.AsNoTracking()
+            join ob in db.Branches.AsNoTracking() on p.OriginBranchId equals ob.Id
+            join dbDest in db.Branches.AsNoTracking() on p.DestinationBranchId equals dbDest.Id
+            orderby p.CreatedAt descending
+            select new ProductListItemDto(
+                p.Id,
+                p.TrackingNumber,
+                p.Description,
+                p.SenderName,
+                p.SenderPhone,
+                p.SenderAddress,
+                p.ReceiverName,
+                p.ReceiverPhone,
+                p.ReceiverAddress,
+                p.OriginBranchId,
+                p.DestinationBranchId,
+                ob.BranchName,
+                dbDest.BranchName,
+                p.ShippingPrice,
+                p.Status.ToString(),
+                p.CreatedAt)).ToListAsync();
+
+        return Results.Ok(list);
+    })
+    .RequireAuthorization();
+
+app.MapPut("/api/products/{id:guid}", async (
+        Guid id,
+        UpdateProductRequest body,
+        ClaimsPrincipal principal,
+        TransportDbContext db) =>
+    {
+        if (!principal.IsInRole(nameof(UserRole.Admin)))
+            return Results.Forbid();
+
+        var originExists = await db.Branches.AnyAsync(b => b.Id == body.OriginBranchId);
+        var destExists = await db.Branches.AnyAsync(b => b.Id == body.DestinationBranchId);
+        if (!originExists || !destExists)
+            return Results.BadRequest(new { error = "Invalid origin or destination branch." });
+
+        if (body.ShippingPrice < 0)
+            return Results.BadRequest(new { error = "Shipping price cannot be negative." });
+
+        var product = await db.Products.FirstOrDefaultAsync(p => p.Id == id);
+        if (product is null)
+            return Results.NotFound();
+
+        product.Description = body.Description.Trim();
+        product.SenderName = body.SenderName.Trim();
+        product.SenderPhone = body.SenderPhone.Trim();
+        product.SenderAddress = body.SenderAddress.Trim();
+        product.ReceiverName = body.ReceiverName.Trim();
+        product.ReceiverPhone = body.ReceiverPhone.Trim();
+        product.ReceiverAddress = body.ReceiverAddress.Trim();
+        product.OriginBranchId = body.OriginBranchId;
+        product.DestinationBranchId = body.DestinationBranchId;
+        product.ShippingPrice = body.ShippingPrice;
+
+        if (product.Status == ProductStatus.Pending)
+            product.CurrentBranchId = body.OriginBranchId;
+
+        await db.SaveChangesAsync();
+        return Results.NoContent();
+    })
+    .RequireAuthorization();
+
+app.MapDelete("/api/products/{id:guid}", async (
+        Guid id,
+        ClaimsPrincipal principal,
+        TransportDbContext db) =>
+    {
+        if (!principal.IsInRole(nameof(UserRole.Admin)))
+            return Results.Forbid();
+
+        var product = await db.Products.FirstOrDefaultAsync(p => p.Id == id);
+        if (product is null)
+            return Results.NotFound();
+
+        if (await db.TripProducts.AnyAsync(tp => tp.ProductId == id))
+            return Results.BadRequest(new { error = "Cannot delete a product that has been assigned to a trip." });
+
+        db.Products.Remove(product);
+        await db.SaveChangesAsync();
+
+        return Results.NoContent();
     })
     .RequireAuthorization();
 

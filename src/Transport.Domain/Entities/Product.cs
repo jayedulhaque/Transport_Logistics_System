@@ -20,6 +20,8 @@ public class Product
     public int DestinationBranchId { get; set; }
     public int? CurrentBranchId { get; set; }
 
+    public decimal ShippingPrice { get; set; }
+
     public ProductStatus Status { get; set; } = ProductStatus.Pending;
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
     public DateTime? DeliveredAt { get; set; }

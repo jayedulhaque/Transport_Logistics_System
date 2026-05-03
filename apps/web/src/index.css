@@ -8,3 +8,29 @@ body {
 #root {
   min-height: 100vh;
 }
+
+@media print {
+  @page {
+    margin: 12mm;
+  }
+
+  body * {
+    visibility: hidden;
+  }
+
+  .print-label-area,
+  .print-label-area * {
+    visibility: visible;
+  }
+
+  .print-label-area {
+    position: absolute;
+    left: 50%;
+    top: 0;
+    transform: translateX(-50%);
+  }
+
+  .no-print {
+    display: none !important;
+  }
+}

@@ -21,9 +21,45 @@ public record CreateProductRequest(
     string ReceiverName,
     string ReceiverPhone,
     string ReceiverAddress,
-    int DestinationBranchId);
+    int OriginBranchId,
+    int DestinationBranchId,
+    decimal ShippingPrice);
 
-public record ProductCreatedResponse(Guid Id, string TrackingNumber);
+public record ProductCreatedResponse(Guid Id, string TrackingNumber, decimal ShippingPrice);
+
+public record UpdateProductRequest(
+    string Description,
+    string SenderName,
+    string SenderPhone,
+    string SenderAddress,
+    string ReceiverName,
+    string ReceiverPhone,
+    string ReceiverAddress,
+    int OriginBranchId,
+    int DestinationBranchId,
+    decimal ShippingPrice);
+
+public record ProductListItemDto(
+    Guid Id,
+    string TrackingNumber,
+    string Description,
+    string SenderName,
+    string SenderPhone,
+    string SenderAddress,
+    string ReceiverName,
+    string ReceiverPhone,
+    string ReceiverAddress,
+    int OriginBranchId,
+    int DestinationBranchId,
+    string OriginBranchName,
+    string DestinationBranchName,
+    decimal ShippingPrice,
+    string Status,
+    DateTime CreatedAt);
+
+public record UpsertBranchRequest(string BranchName, string Code, string Address);
+
+public record BranchDto(int Id, string BranchName, string Code, string Address);
 
 public record PendingDriverDto(int Id, int UserId, string FullName, string Phone, string VehicleNumber, int? BranchId);
 
