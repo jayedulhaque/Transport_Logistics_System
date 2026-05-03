@@ -63,6 +63,17 @@ public record BranchDto(int Id, string BranchName, string Code, string Address);
 
 public record PendingDriverDto(int Id, int UserId, string FullName, string Phone, string VehicleNumber, int? BranchId);
 
+public record ApprovedDriverDto(int Id, int UserId, string FullName, string Phone, string VehicleNumber, int? BranchId, bool IsOnline);
+
+public record DriverLivePositionDto(
+    int DriverProfileId,
+    string FullName,
+    string VehicleNumber,
+    decimal Latitude,
+    decimal Longitude,
+    DateTime? LastSeenAt,
+    bool IsOnline);
+
 public record AvailableDriverDto(int DriverProfileId, string FullName, string VehicleNumber, bool IsOnline);
 
 public record PresenceRequest(bool IsOnline);

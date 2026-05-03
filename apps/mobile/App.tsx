@@ -9,7 +9,7 @@ import {
   TextInput,
   View,
 } from 'react-native';
-import { BarCodeScanner } from 'expo-barcode-scanner';
+import { CameraView, Camera } from 'expo-camera';
 import * as Location from 'expo-location';
 import {
   HubConnection,
@@ -457,12 +457,12 @@ function StaffScanner({
 
   useEffect(() => {
     void (async () => {
-      const { status } = await BarCodeScanner.requestPermissionsAsync();
+      const { status } = await Camera.requestCameraPermissionsAsync();
       setPermission(status === 'granted');
     })();
   }, []);
 
-  const onBarCode = async ({ data }: { data: string }) => {
+  const onBarcodeScanned = async ({ data }: { data: string }) => {
     if (!scanning) return;
     setScanning(false);
     const res = await apiFetch(
@@ -513,9 +513,27 @@ function StaffScanner({
   return (
     <View style={{ flex: 1 }}>
       <View style={{ height: 220 }}>
-        <BarCodeScanner
-          onBarCodeScanned={scanning ? onBarCode : undefined}
+        <CameraView
+          facing="back"
           style={StyleSheet.absoluteFillObject}
+          barcodeScannerSettings={{
+            barcodeTypes: [
+              'qr',
+              'code128',
+              'code39',
+              'codabar',
+              'ean13',
+              'ean8',
+              'upc_a',
+              'upc_e',
+              'pdf417',
+              'aztec',
+              'datamatrix',
+              'code93',
+              'itf14',
+            ],
+          }}
+          onBarcodeScanned={scanning ? onBarcodeScanned : undefined}
         />
       </View>
       <Text style={styles.label}>Scanned items</Text>

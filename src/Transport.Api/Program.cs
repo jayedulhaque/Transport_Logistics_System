@@ -263,6 +263,75 @@ app.MapGet("/api/drivers/pending", async (ClaimsPrincipal principal, TransportDb
     })
     .RequireAuthorization();
 
+app.MapGet("/api/drivers/approved", async (ClaimsPrincipal principal, TransportDbContext db) =>
+    {
+        if (!principal.IsInRole(nameof(UserRole.Admin)))
+            return Results.Forbid();
+
+        var list = await db.DriverProfiles.AsNoTracking()
+            .Where(d => d.IsApproved)
+            .Include(d => d.User)
+            .OrderBy(d => d.User.FullName)
+            .Select(d => new ApprovedDriverDto(
+                d.Id,
+                d.UserId,
+                d.User.FullName,
+                d.User.Phone,
+                d.VehicleNumber,
+                d.User.BranchId,
+                d.IsOnline))
+            .ToListAsync();
+
+        return Results.Ok(list);
+    })
+    .RequireAuthorization();
+
+app.MapGet("/api/tracking/driver-locations", async (ClaimsPrincipal principal, TransportDbContext db) =>
+    {
+        if (principal.IsInRole(nameof(UserRole.Admin)))
+        {
+            var list = await db.DriverProfiles.AsNoTracking()
+                .Where(d => d.IsApproved)
+                .Include(d => d.User)
+                .OrderBy(d => d.User.FullName)
+                .Select(d => new DriverLivePositionDto(
+                    d.Id,
+                    d.User.FullName,
+                    d.VehicleNumber,
+                    d.CurrentLat,
+                    d.CurrentLng,
+                    d.LastSeenAt,
+                    d.IsOnline))
+                .ToListAsync();
+            return Results.Ok(list);
+        }
+
+        if (principal.IsInRole(nameof(UserRole.Staff)))
+        {
+            var branchClaim = principal.FindFirst(JwtClaims.BranchId)?.Value;
+            if (string.IsNullOrEmpty(branchClaim) || !int.TryParse(branchClaim, out var branchId))
+                return Results.BadRequest(new { error = "Staff must belong to a branch." });
+
+            var list = await db.DriverProfiles.AsNoTracking()
+                .Where(d => d.IsApproved && d.User.BranchId == branchId)
+                .Include(d => d.User)
+                .OrderBy(d => d.User.FullName)
+                .Select(d => new DriverLivePositionDto(
+                    d.Id,
+                    d.User.FullName,
+                    d.VehicleNumber,
+                    d.CurrentLat,
+                    d.CurrentLng,
+                    d.LastSeenAt,
+                    d.IsOnline))
+                .ToListAsync();
+            return Results.Ok(list);
+        }
+
+        return Results.Forbid();
+    })
+    .RequireAuthorization();
+
 app.MapPatch("/api/drivers/{id:int}/approve", async (
         int id,
         ClaimsPrincipal principal,

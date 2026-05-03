@@ -45,7 +45,7 @@ services:
       args:
         VITE_API_URL: http://localhost:5000
         VITE_SIGNALR_URL: http://localhost:5000
-        VITE_GOOGLE_MAPS_API_KEY: ""
+        VITE_GOOGLE_MAPS_API_KEY: ${VITE_GOOGLE_MAPS_API_KEY:-}
     ports:
       - "3000:80"
     depends_on:
@@ -55,13 +55,18 @@ services:
     build:
       context: .
       dockerfile: docker/mobile/Dockerfile
+    stdin_open: true
+    tty: true
     ports:
       - "8081:8081"
       - "19000:19000"
       - "19001:19001"
       - "19002:19002"
     environment:
-      EXPO_PUBLIC_API_URL: http://host.docker.internal:5000
+      # host.docker.internal is for the packager inside Docker reaching the API on the host.
+      # On a physical phone, set both in a root .env file to your PC's LAN IPv4 (e.g. 192.168.1.10).
+      EXPO_PUBLIC_API_URL: ${EXPO_PUBLIC_API_URL:-http://host.docker.internal:5000}
+      REACT_NATIVE_PACKAGER_HOSTNAME: ${EXPO_PACKAGER_HOSTNAME:-127.0.0.1}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:

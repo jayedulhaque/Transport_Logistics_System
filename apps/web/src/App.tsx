@@ -27,7 +27,21 @@ import {
   Users,
 } from 'lucide-react'
 import { GoogleMap, LoadScript, Marker } from '@react-google-maps/api'
+import L from 'leaflet'
+import icon2x from 'leaflet/dist/images/marker-icon-2x.png'
+import icon from 'leaflet/dist/images/marker-icon.png'
+import shadow from 'leaflet/dist/images/marker-shadow.png'
+import { MapContainer, Marker as LeafletMarker, Popup, TileLayer, useMap } from 'react-leaflet'
 import { apiFetch, getToken, signalrBase } from './api'
+
+const leafletDefaultIcon = L.icon({
+  iconRetinaUrl: icon2x,
+  iconUrl: icon,
+  shadowUrl: shadow,
+  iconSize: [25, 41],
+  iconAnchor: [12, 41],
+})
+L.Marker.prototype.options.icon = leafletDefaultIcon
 
 type PendingDriver = {
   id: number
@@ -38,7 +52,17 @@ type PendingDriver = {
   branchId: number | null
 }
 
-type LatLng = { driverProfileId: number; lat: number; lng: number }
+type ApprovedDriver = PendingDriver & { isOnline: boolean }
+
+type DriverOnMap = {
+  driverProfileId: number
+  fullName: string
+  vehicleNumber: string
+  lat: number
+  lng: number
+  lastSeenAt: string | null
+  isOnline: boolean
+}
 
 type Branch = {
   id: number
@@ -208,12 +232,17 @@ function Layout({ children }: { children: React.ReactNode }) {
 
 function ApprovalsPage() {
   const [rows, setRows] = useState<PendingDriver[]>([])
+  const [approved, setApproved] = useState<ApprovedDriver[]>([])
   const [loading, setLoading] = useState(true)
 
   const load = useCallback(async () => {
     setLoading(true)
-    const res = await apiFetch('/api/drivers/pending')
-    if (res.ok) setRows(await res.json())
+    const [pendingRes, approvedRes] = await Promise.all([
+      apiFetch('/api/drivers/pending'),
+      apiFetch('/api/drivers/approved'),
+    ])
+    if (pendingRes.ok) setRows(await pendingRes.json())
+    if (approvedRes.ok) setApproved(await approvedRes.json())
     setLoading(false)
   }, [])
 
@@ -229,44 +258,93 @@ function ApprovalsPage() {
   if (loading) return <p className="text-slate-400">Loading…</p>
 
   return (
-    <div>
-      <h2 className="mb-4 text-xl font-semibold text-white">Pending driver approvals</h2>
-      <div className="overflow-hidden rounded-xl border border-slate-800">
-        <table className="w-full text-left text-sm">
-          <thead className="bg-slate-900 text-slate-400">
-            <tr>
-              <th className="px-4 py-3">Name</th>
-              <th className="px-4 py-3">Phone</th>
-              <th className="px-4 py-3">Vehicle</th>
-              <th className="px-4 py-3"></th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((r) => (
-              <tr key={r.id} className="border-t border-slate-800">
-                <td className="px-4 py-3">{r.fullName}</td>
-                <td className="px-4 py-3">{r.phone}</td>
-                <td className="px-4 py-3">{r.vehicleNumber}</td>
-                <td className="px-4 py-3 text-right">
-                  <button
-                    type="button"
-                    onClick={() => void approve(r.id)}
-                    className="inline-flex items-center gap-1 rounded-lg bg-emerald-600 px-3 py-1 text-white hover:bg-emerald-500"
-                  >
-                    <Check size={16} /> Approve
-                  </button>
-                </td>
-              </tr>
-            ))}
-            {rows.length === 0 && (
+    <div className="space-y-10">
+      <div>
+        <h2 className="mb-4 text-xl font-semibold text-white">Pending driver approvals</h2>
+        <p className="mb-3 text-sm text-slate-500">
+          Drivers who registered and are waiting for admin approval.
+        </p>
+        <div className="overflow-hidden rounded-xl border border-slate-800">
+          <table className="w-full text-left text-sm">
+            <thead className="bg-slate-900 text-slate-400">
               <tr>
-                <td className="px-4 py-6 text-slate-500" colSpan={4}>
-                  No pending drivers.
-                </td>
+                <th className="px-4 py-3">Name</th>
+                <th className="px-4 py-3">Phone</th>
+                <th className="px-4 py-3">Vehicle</th>
+                <th className="px-4 py-3"></th>
               </tr>
-            )}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {rows.map((r) => (
+                <tr key={r.id} className="border-t border-slate-800">
+                  <td className="px-4 py-3">{r.fullName}</td>
+                  <td className="px-4 py-3">{r.phone}</td>
+                  <td className="px-4 py-3">{r.vehicleNumber}</td>
+                  <td className="px-4 py-3 text-right">
+                    <button
+                      type="button"
+                      onClick={() => void approve(r.id)}
+                      className="inline-flex items-center gap-1 rounded-lg bg-emerald-600 px-3 py-1 text-white hover:bg-emerald-500"
+                    >
+                      <Check size={16} /> Approve
+                    </button>
+                  </td>
+                </tr>
+              ))}
+              {rows.length === 0 && (
+                <tr>
+                  <td className="px-4 py-6 text-slate-500" colSpan={4}>
+                    No pending drivers.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div>
+        <h2 className="mb-4 text-xl font-semibold text-white">Approved drivers</h2>
+        <p className="mb-3 text-sm text-slate-500">
+          Drivers who can sign in and go online for trips at their branch.
+        </p>
+        <div className="overflow-hidden rounded-xl border border-slate-800">
+          <table className="w-full text-left text-sm">
+            <thead className="bg-slate-900 text-slate-400">
+              <tr>
+                <th className="px-4 py-3">Name</th>
+                <th className="px-4 py-3">Phone</th>
+                <th className="px-4 py-3">Vehicle</th>
+                <th className="px-4 py-3">Branch id</th>
+                <th className="px-4 py-3">Online</th>
+              </tr>
+            </thead>
+            <tbody>
+              {approved.map((r) => (
+                <tr key={r.id} className="border-t border-slate-800">
+                  <td className="px-4 py-3">{r.fullName}</td>
+                  <td className="px-4 py-3">{r.phone}</td>
+                  <td className="px-4 py-3">{r.vehicleNumber}</td>
+                  <td className="px-4 py-3 text-slate-300">{r.branchId ?? '—'}</td>
+                  <td className="px-4 py-3">
+                    {r.isOnline ? (
+                      <span className="text-emerald-400">Yes</span>
+                    ) : (
+                      <span className="text-slate-500">No</span>
+                    )}
+                  </td>
+                </tr>
+              ))}
+              {approved.length === 0 && (
+                <tr>
+                  <td className="px-4 py-6 text-slate-500" colSpan={5}>
+                    No approved drivers yet. Approve a driver above to see them here.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
       </div>
     </div>
   )
@@ -469,10 +547,129 @@ function BranchesPage() {
   )
 }
 
+function hasDriverPosition(d: { lat: number; lng: number }): boolean {
+  return Math.abs(d.lat) > 0.0001 || Math.abs(d.lng) > 0.0001
+}
+
+function meanCenter(drivers: DriverOnMap[]): { lat: number; lng: number } {
+  const valid = drivers.filter(hasDriverPosition)
+  if (valid.length === 0) return { lat: 23.8103, lng: 90.4125 }
+  const lat = valid.reduce((s, d) => s + d.lat, 0) / valid.length
+  const lng = valid.reduce((s, d) => s + d.lng, 0) / valid.length
+  return { lat, lng }
+}
+
+function LeafletRecenter({
+  center,
+  zoom,
+}: {
+  center: { lat: number; lng: number }
+  zoom: number
+}) {
+  const map = useMap()
+  useEffect(() => {
+    map.setView([center.lat, center.lng], zoom)
+  }, [center.lat, center.lng, zoom, map])
+  return null
+}
+
+function OsmLiveMap({
+  drivers,
+  mapCenter,
+  mapZoom,
+  onSelectDriver,
+}: {
+  drivers: DriverOnMap[]
+  mapCenter: { lat: number; lng: number }
+  mapZoom: number
+  onSelectDriver: (id: number) => void
+}) {
+  return (
+    <MapContainer
+      center={[mapCenter.lat, mapCenter.lng]}
+      zoom={mapZoom}
+      style={{ height: 420, width: '100%' }}
+      className="z-0 rounded-xl border border-slate-800 [&_.leaflet-control-attribution]:max-w-[55%] [&_.leaflet-control-attribution]:truncate [&_.leaflet-control-attribution]:text-[10px] [&_.leaflet-control-attribution]:text-slate-400"
+      scrollWheelZoom
+    >
+      <LeafletRecenter center={mapCenter} zoom={mapZoom} />
+      <TileLayer
+        attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
+        url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+        maxZoom={19}
+      />
+      {drivers.filter(hasDriverPosition).map((d) => (
+        <LeafletMarker
+          key={d.driverProfileId}
+          position={[d.lat, d.lng]}
+          eventHandlers={{
+            click: () => {
+              onSelectDriver(d.driverProfileId)
+            },
+          }}
+        >
+          <Popup>
+            <span className="text-slate-900">
+              {d.fullName} · {d.vehicleNumber} (#{d.driverProfileId})
+            </span>
+          </Popup>
+        </LeafletMarker>
+      ))}
+    </MapContainer>
+  )
+}
+
 function LiveMapPage() {
-  const apiKey = import.meta.env.VITE_GOOGLE_MAPS_API_KEY as string | undefined
-  const [markers, setMarkers] = useState<LatLng[]>([])
+  const apiKey = (import.meta.env.VITE_GOOGLE_MAPS_API_KEY as string | undefined)?.trim()
+  const [drivers, setDrivers] = useState<DriverOnMap[]>([])
+  const [selectedId, setSelectedId] = useState<number | null>(null)
   const [connection, setConnection] = useState<HubConnection | null>(null)
+
+  const mergeLocation = (driverProfileId: number, lat: number, lng: number) => {
+    setDrivers((prev) => {
+      const rest = prev.filter((d) => d.driverProfileId !== driverProfileId)
+      const old = prev.find((d) => d.driverProfileId === driverProfileId)
+      const next: DriverOnMap = {
+        driverProfileId,
+        fullName: old?.fullName ?? `Driver #${driverProfileId}`,
+        vehicleNumber: old?.vehicleNumber ?? '',
+        lat: Number(lat),
+        lng: Number(lng),
+        lastSeenAt: new Date().toISOString(),
+        isOnline: old?.isOnline ?? true,
+      }
+      return [...rest, next].sort((a, b) => a.fullName.localeCompare(b.fullName))
+    })
+  }
+
+  useEffect(() => {
+    void (async () => {
+      const res = await apiFetch('/api/tracking/driver-locations')
+      if (!res.ok) return
+      const raw = (await res.json()) as {
+        driverProfileId: number
+        fullName: string
+        vehicleNumber: string
+        latitude: number
+        longitude: number
+        lastSeenAt: string | null
+        isOnline: boolean
+      }[]
+      setDrivers(
+        raw
+          .map((r) => ({
+            driverProfileId: r.driverProfileId,
+            fullName: r.fullName,
+            vehicleNumber: r.vehicleNumber,
+            lat: Number(r.latitude),
+            lng: Number(r.longitude),
+            lastSeenAt: r.lastSeenAt,
+            isOnline: r.isOnline,
+          }))
+          .sort((a, b) => a.fullName.localeCompare(b.fullName))
+      )
+    })()
+  }, [])
 
   useEffect(() => {
     const token = getToken()
@@ -485,20 +682,9 @@ function LiveMapPage() {
       .withAutomaticReconnect()
       .build()
 
-    hub.on(
-      'LocationUpdated',
-      (driverProfileId: number, lat: number, lng: number) => {
-        setMarkers((prev) => {
-          const next = prev.filter((m) => m.driverProfileId !== driverProfileId)
-          next.push({
-            driverProfileId,
-            lat: Number(lat),
-            lng: Number(lng),
-          })
-          return next
-        })
-      }
-    )
+    hub.on('LocationUpdated', (driverProfileId: number, lat: number, lng: number) => {
+      mergeLocation(driverProfileId, lat, lng)
+    })
 
     void hub
       .start()
@@ -513,11 +699,19 @@ function LiveMapPage() {
     }
   }, [])
 
-  const center = useMemo(() => {
-    if (markers.length === 0) return { lat: 23.8103, lng: 90.4125 }
-    const m = markers[markers.length - 1]
-    return { lat: m.lat, lng: m.lng }
-  }, [markers])
+  const mapCenter = useMemo(() => {
+    if (selectedId != null) {
+      const d = drivers.find((x) => x.driverProfileId === selectedId)
+      if (d && hasDriverPosition(d)) return { lat: d.lat, lng: d.lng }
+    }
+    return meanCenter(drivers)
+  }, [selectedId, drivers])
+
+  const mapZoom = useMemo(() => {
+    if (selectedId == null) return 11
+    const d = drivers.find((x) => x.driverProfileId === selectedId)
+    return d && hasDriverPosition(d) ? 15 : 11
+  }, [selectedId, drivers])
 
   const mapContainerStyle = useMemo(() => ({ width: '100%', height: '420px' }), [])
 
@@ -531,34 +725,104 @@ function LiveMapPage() {
         ) : (
           <span className="text-amber-400">connecting…</span>
         )}
+        {apiKey ? (
+          <span className="text-slate-600"> · Google Maps</span>
+        ) : (
+          <span className="text-slate-600"> · OpenStreetMap (set VITE_GOOGLE_MAPS_API_KEY for Google tiles)</span>
+        )}
       </p>
 
-      {apiKey ? (
-        <LoadScript googleMapsApiKey={apiKey}>
-          <GoogleMap mapContainerStyle={mapContainerStyle} zoom={12} center={center}>
-            {markers.map((m) => (
-              <Marker
-                key={m.driverProfileId}
-                position={{ lat: m.lat, lng: m.lng }}
-                label={`#${m.driverProfileId}`}
-              />
-            ))}
-          </GoogleMap>
-        </LoadScript>
-      ) : (
-        <div className="rounded-xl border border-dashed border-slate-700 bg-slate-900/50 p-6 text-slate-400">
-          Set <code className="text-violet-300">VITE_GOOGLE_MAPS_API_KEY</code> for map tiles.
-          Latest positions:
-          <ul className="mt-4 list-inside list-disc text-sm">
-            {markers.map((m) => (
-              <li key={m.driverProfileId}>
-                Driver #{m.driverProfileId}: {m.lat.toFixed(5)}, {m.lng.toFixed(5)}
+      <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_300px]">
+        <div>
+          {apiKey ? (
+            <LoadScript googleMapsApiKey={apiKey}>
+              <GoogleMap
+                mapContainerStyle={mapContainerStyle}
+                zoom={mapZoom}
+                center={mapCenter}
+              >
+                {drivers.filter(hasDriverPosition).map((d) => (
+                  <Marker
+                    key={d.driverProfileId}
+                    position={{ lat: d.lat, lng: d.lng }}
+                    title={`${d.fullName} · ${d.vehicleNumber} (#${d.driverProfileId})`}
+                    onClick={() => setSelectedId(d.driverProfileId)}
+                  />
+                ))}
+              </GoogleMap>
+            </LoadScript>
+          ) : (
+            <OsmLiveMap
+              drivers={drivers}
+              mapCenter={mapCenter}
+              mapZoom={mapZoom}
+              onSelectDriver={setSelectedId}
+            />
+          )}
+        </div>
+
+        <div className="rounded-xl border border-slate-800 bg-slate-900/40 p-4">
+          <div className="mb-3 flex items-center justify-between gap-2">
+            <h3 className="text-sm font-semibold text-white">Drivers</h3>
+            <button
+              type="button"
+              disabled={selectedId == null}
+              onClick={() => setSelectedId(null)}
+              className="rounded-lg border border-slate-600 px-2 py-1 text-xs text-slate-300 hover:bg-slate-800 disabled:opacity-40"
+            >
+              Show all
+            </button>
+          </div>
+          <p className="mb-3 text-xs text-slate-500">
+            Select a driver to center the map on their latest position. Live updates arrive over SignalR when drivers
+            report GPS.
+          </p>
+          <ul className="max-h-[360px] space-y-1 overflow-y-auto text-sm">
+            {drivers.map((d) => {
+              const ok = hasDriverPosition(d)
+              const active = selectedId === d.driverProfileId
+              return (
+                <li key={d.driverProfileId}>
+                  <button
+                    type="button"
+                    onClick={() => setSelectedId(d.driverProfileId)}
+                    className={`w-full rounded-lg border px-3 py-2 text-left transition-colors ${
+                      active
+                        ? 'border-violet-500 bg-violet-950/50 text-white'
+                        : 'border-slate-800 bg-slate-950/60 text-slate-200 hover:border-slate-600'
+                    }`}
+                  >
+                    <div className="font-medium">{d.fullName}</div>
+                    <div className="text-xs text-slate-400">
+                      {d.vehicleNumber} · #{d.driverProfileId}
+                      {d.isOnline ? (
+                        <span className="ml-2 text-emerald-400">online</span>
+                      ) : (
+                        <span className="ml-2 text-slate-500">offline</span>
+                      )}
+                    </div>
+                    <div className="mt-1 font-mono text-[11px] text-slate-500">
+                      {ok ? (
+                        <>
+                          {d.lat.toFixed(5)}, {d.lng.toFixed(5)}
+                        </>
+                      ) : (
+                        'No GPS position yet'
+                      )}
+                    </div>
+                  </button>
+                </li>
+              )
+            })}
+            {drivers.length === 0 && (
+              <li className="rounded-lg border border-dashed border-slate-700 px-3 py-4 text-slate-500">
+                No drivers in scope. Admins see all approved drivers; staff see their branch. Positions update when
+                drivers run the mobile app with location on.
               </li>
-            ))}
-            {markers.length === 0 && <li>No updates yet.</li>}
+            )}
           </ul>
         </div>
-      )}
+      </div>
     </div>
   )
 }

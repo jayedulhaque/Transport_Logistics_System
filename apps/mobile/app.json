@@ -27,7 +27,14 @@
       "favicon": "./assets/favicon.png"
     },
     "plugins": [
-      "expo-barcode-scanner",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Allow Transport Logistics to scan parcel barcodes with the camera.",
+          "microphonePermission": "Allow Transport Logistics to use the microphone when recording video.",
+          "recordAudioAndroid": false
+        }
+      ],
       [
         "expo-location",
         {
