@@ -61,9 +61,24 @@ public record UpsertBranchRequest(string BranchName, string Code, string Address
 
 public record BranchDto(int Id, string BranchName, string Code, string Address);
 
-public record PendingDriverDto(int Id, int UserId, string FullName, string Phone, string VehicleNumber, int? BranchId);
+public record PendingDriverDto(
+    int Id,
+    int UserId,
+    string FullName,
+    string Phone,
+    string VehicleNumber,
+    int? BranchId,
+    string? BranchName);
 
-public record ApprovedDriverDto(int Id, int UserId, string FullName, string Phone, string VehicleNumber, int? BranchId, bool IsOnline);
+public record ApprovedDriverDto(
+    int Id,
+    int UserId,
+    string FullName,
+    string Phone,
+    string VehicleNumber,
+    int? BranchId,
+    string? BranchName,
+    bool IsOnline);
 
 public record DriverLivePositionDto(
     int DriverProfileId,
@@ -76,6 +91,24 @@ public record DriverLivePositionDto(
 
 public record AvailableDriverDto(int DriverProfileId, string FullName, string VehicleNumber, bool IsOnline);
 
+public record StaffListItemDto(
+    int Id,
+    string FullName,
+    string Phone,
+    int? BranchId,
+    string? BranchName,
+    bool IsActive);
+
+public record CreateStaffRequest(string FullName, string Phone, string Password, int BranchId);
+
+public record UpdateStaffRequest(string FullName, string Phone, int BranchId, bool IsActive);
+
+public record CreateBranchManagerRequest(string FullName, string Phone, string Password, int BranchId);
+
+public record UpdateBranchManagerRequest(string FullName, string Phone, int BranchId, bool IsActive);
+
+public record UpdateDriverBranchRequest(int BranchId);
+
 public record PresenceRequest(bool IsOnline);
 
 public record LocationRequest(decimal Latitude, decimal Longitude);
@@ -84,4 +117,11 @@ public record TripLoadRequest(int DriverProfileId, List<Guid> ProductIds);
 
 public record TripLoadResponse(Guid TripId);
 
+public record TripUnloadRequest(List<Guid> ProductIds);
+
+public record DeliverProductRequest(string ReceiverPhone, bool PaidBySender, bool PaymentReceivedAtBranch);
+
 public record DriverStatusResponse(bool IsApproved, int? DriverProfileId);
+
+/// <summary>Delivered shipment revenue attributed to the destination branch.</summary>
+public record BranchCollectionRowDto(int BranchId, string BranchName, decimal TotalCollection);

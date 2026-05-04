@@ -37,7 +37,14 @@ type Screen =
   | 'driverTrack'
   | 'staffLogin'
   | 'staffDrivers'
-  | 'staffScan';
+  | 'staffScan'
+  | 'staffUnload';
+
+type BranchOption = {
+  id: number;
+  branchName: string;
+  code: string;
+};
 
 export default function App() {
   const [screen, setScreen] = useState<Screen>('home');
@@ -152,6 +159,10 @@ export default function App() {
             setSelectedDriverProfileId(id);
             setScreen('staffScan');
           }}
+          onUnload={() => {
+            setSelectedDriverProfileId(null);
+            setScreen('staffUnload');
+          }}
           onBack={() => setScreen('home')}
         />
       )}
@@ -160,6 +171,18 @@ export default function App() {
         <StaffScanner
           token={staffToken}
           driverProfileId={selectedDriverProfileId}
+          mode="load"
+          title="Load parcels to selected driver"
+          onBack={() => setScreen('staffDrivers')}
+        />
+      )}
+
+      {screen === 'staffUnload' && staffToken && (
+        <StaffScanner
+          token={staffToken}
+          driverProfileId={null}
+          mode="unload"
+          title="Unload parcels at destination branch"
           onBack={() => setScreen('staffDrivers')}
         />
       )}
@@ -172,9 +195,33 @@ function DriverRegister({ onDone, onBack }: { onDone: () => void; onBack: () => 
   const [phone, setPhone] = useState('');
   const [password, setPassword] = useState('');
   const [vehicle, setVehicle] = useState('');
-  const [branchId, setBranchId] = useState('1');
+  const [branchId, setBranchId] = useState<number | null>(null);
+  const [branches, setBranches] = useState<BranchOption[]>([]);
+  const [loadingBranches, setLoadingBranches] = useState(true);
+
+  const loadBranches = useCallback(async () => {
+    setLoadingBranches(true);
+    const res = await apiFetch('/api/public/branches');
+    if (!res.ok) {
+      setLoadingBranches(false);
+      Alert.alert('Error', 'Could not load branch list.');
+      return;
+    }
+    const data = (await res.json()) as BranchOption[];
+    setBranches(data);
+    if (data.length > 0) setBranchId((prev) => prev ?? data[0].id);
+    setLoadingBranches(false);
+  }, []);
+
+  useEffect(() => {
+    void loadBranches();
+  }, [loadBranches]);
 
   const submit = async () => {
+    if (!branchId) {
+      Alert.alert('Select branch', 'Please select your home branch.');
+      return;
+    }
     const res = await apiFetch('/api/auth/register-driver', {
       method: 'POST',
       body: JSON.stringify({
@@ -182,7 +229,7 @@ function DriverRegister({ onDone, onBack }: { onDone: () => void; onBack: () => 
         phone,
         password,
         vehicleNumber: vehicle,
-        branchId: Number(branchId),
+        branchId,
       }),
     });
     if (!res.ok) {
@@ -207,8 +254,26 @@ function DriverRegister({ onDone, onBack }: { onDone: () => void; onBack: () => 
       />
       <Text style={styles.label}>Vehicle number</Text>
       <TextInput style={styles.input} value={vehicle} onChangeText={setVehicle} />
-      <Text style={styles.label}>Home branch id</Text>
-      <TextInput style={styles.input} value={branchId} onChangeText={setBranchId} keyboardType="number-pad" />
+      <Text style={styles.label}>Home branch</Text>
+      {loadingBranches ? (
+        <Text style={styles.sub}>Loading branches…</Text>
+      ) : (
+        <View style={styles.branchList}>
+          {branches.map((b) => {
+            const selected = branchId === b.id;
+            return (
+              <Text
+                key={b.id}
+                onPress={() => setBranchId(b.id)}
+                style={[styles.branchOption, selected && styles.branchOptionSelected]}
+              >
+                {b.branchName} ({b.code})
+              </Text>
+            );
+          })}
+          {branches.length === 0 && <Text style={styles.sub}>No branches found.</Text>}
+        </View>
+      )}
       <Button title="Submit registration" onPress={() => void submit()} />
       <View style={styles.gap} />
       <Button title="Back" onPress={onBack} />
@@ -400,10 +465,12 @@ function StaffLogin({
 function StaffPickDriver({
   token,
   onPicked,
+  onUnload,
   onBack,
 }: {
   token: string;
   onPicked: (driverProfileId: number) => void;
+  onUnload: () => void;
   onBack: () => void;
 }) {
   const [rows, setRows] = useState<{ driverProfileId: number; fullName: string; vehicleNumber: string }[]>(
@@ -437,6 +504,8 @@ function StaffPickDriver({
       />
       <Button title="Refresh" onPress={() => void load()} />
       <View style={styles.gap} />
+      <Button title="Unload at destination branch" onPress={onUnload} />
+      <View style={styles.gap} />
       <Button title="Back" onPress={onBack} />
     </View>
   );
@@ -445,15 +514,22 @@ function StaffPickDriver({
 function StaffScanner({
   token,
   driverProfileId,
+  mode,
+  title,
   onBack,
 }: {
   token: string;
   driverProfileId: number | null;
+  mode: 'load' | 'unload';
+  title: string;
   onBack: () => void;
 }) {
   const [permission, setPermission] = useState<boolean | null>(null);
   const [scanned, setScanned] = useState<{ id: string; tracking: string }[]>([]);
   const [scanning, setScanning] = useState(true);
+  const [scanError, setScanError] = useState<string | null>(null);
+  const inFlightRef = useRef(false);
+  const lastScanRef = useRef<{ data: string; at: number } | null>(null);
 
   useEffect(() => {
     void (async () => {
@@ -463,15 +539,25 @@ function StaffScanner({
   }, []);
 
   const onBarcodeScanned = async ({ data }: { data: string }) => {
-    if (!scanning) return;
+    if (!scanning || inFlightRef.current) return;
+    const now = Date.now();
+    const last = lastScanRef.current;
+    // Camera callbacks can fire many times for the same QR while it stays in frame.
+    if (last && last.data === data && now - last.at < 1500) return;
+    lastScanRef.current = { data, at: now };
+    inFlightRef.current = true;
     setScanning(false);
+    setScanError(null);
+    const lookupMode = mode === 'unload' ? '&mode=unload' : '';
     const res = await apiFetch(
-      `/api/staff/products/lookup?tracking=${encodeURIComponent(data)}`,
+      `/api/staff/products/lookup?tracking=${encodeURIComponent(data)}${lookupMode}`,
       {},
       token
     );
     if (!res.ok) {
-      Alert.alert('Lookup failed', await res.text());
+      const message = await res.text();
+      setScanError(message || 'Lookup failed.');
+      inFlightRef.current = false;
       setScanning(true);
       return;
     }
@@ -480,10 +566,38 @@ function StaffScanner({
       if (prev.some((x) => x.id === p.id)) return prev;
       return [...prev, { id: p.id as string, tracking: p.trackingNumber as string }];
     });
+    inFlightRef.current = false;
     setScanning(true);
   };
 
   const confirmLoad = async () => {
+    if (mode === 'unload') {
+      if (scanned.length === 0) {
+        Alert.alert('Scan at least one parcel');
+        return;
+      }
+      const res = await apiFetch(
+        '/api/trips/unload',
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            productIds: scanned.map((s) => s.id),
+          }),
+        },
+        token
+      );
+      if (!res.ok) {
+        Alert.alert('Unload failed', await res.text());
+        return;
+      }
+      Alert.alert('Unload confirmed');
+      setScanned([]);
+      setScanning(false);
+      lastScanRef.current = null;
+      setScanError('Unload confirmed. Tap "Resume scan" to scan more parcels.');
+      return;
+    }
+
     if (driverProfileId == null) {
       Alert.alert('Select a driver first');
       return;
@@ -505,6 +619,9 @@ function StaffScanner({
     }
     Alert.alert('Load confirmed');
     setScanned([]);
+    setScanning(false);
+    lastScanRef.current = null;
+    setScanError('Load confirmed. Tap "Resume scan" to scan more parcels.');
   };
 
   if (permission === null) return <Text style={styles.sub}>Requesting camera…</Text>;
@@ -512,6 +629,7 @@ function StaffScanner({
 
   return (
     <View style={{ flex: 1 }}>
+      <Text style={styles.label}>{title}</Text>
       <View style={{ height: 220 }}>
         <CameraView
           facing="back"
@@ -537,6 +655,7 @@ function StaffScanner({
         />
       </View>
       <Text style={styles.label}>Scanned items</Text>
+      {scanError && <Text style={styles.sub}>{scanError}</Text>}
       <FlatList
         data={scanned}
         keyExtractor={(item) => item.id}
@@ -546,7 +665,18 @@ function StaffScanner({
           </Text>
         )}
       />
-      <Button title="Confirm load" onPress={() => void confirmLoad()} />
+      <Button
+        title={mode === 'unload' ? 'Confirm unload' : 'Confirm load'}
+        onPress={() => void confirmLoad()}
+      />
+      <View style={styles.gap} />
+      <Button
+        title={scanning ? 'Pause scan' : 'Resume scan'}
+        onPress={() => {
+          setScanError(null);
+          setScanning((v) => !v);
+        }}
+      />
       <View style={styles.gap} />
       <Button title="Back" onPress={onBack} />
     </View>
@@ -579,4 +709,18 @@ const styles = StyleSheet.create({
     borderBottomColor: '#1e293b',
   },
   rowText: { color: '#e2e8f0', flex: 1, paddingRight: 8 },
+  branchList: { gap: 8 },
+  branchOption: {
+    borderWidth: 1,
+    borderColor: '#334155',
+    borderRadius: 8,
+    padding: 10,
+    color: '#e2e8f0',
+    backgroundColor: '#020617',
+  },
+  branchOptionSelected: {
+    borderColor: '#6366f1',
+    backgroundColor: '#312e81',
+    color: '#fff',
+  },
 });

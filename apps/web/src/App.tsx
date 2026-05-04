@@ -15,6 +15,7 @@ import {
 } from '@microsoft/signalr'
 import { QRCodeSVG } from 'qrcode.react'
 import {
+  BarChart3,
   Building2,
   Check,
   LayoutDashboard,
@@ -24,6 +25,7 @@ import {
   Pencil,
   Printer,
   Trash2,
+  UserCog,
   Users,
 } from 'lucide-react'
 import { GoogleMap, LoadScript, Marker } from '@react-google-maps/api'
@@ -50,9 +52,19 @@ type PendingDriver = {
   phone: string
   vehicleNumber: string
   branchId: number | null
+  branchName: string | null
 }
 
 type ApprovedDriver = PendingDriver & { isOnline: boolean }
+
+type StaffRow = {
+  id: number
+  fullName: string
+  phone: string
+  branchId: number | null
+  branchName: string | null
+  isActive: boolean
+}
 
 type DriverOnMap = {
   driverProfileId: number
@@ -135,6 +147,8 @@ function LoginPage() {
     const data = await res.json()
     localStorage.setItem('transport_token', data.accessToken)
     localStorage.setItem('transport_role', data.role)
+    if (data.branchId != null) localStorage.setItem('transport_branch_id', String(data.branchId))
+    else localStorage.removeItem('transport_branch_id')
     navigate('/')
   }
 
@@ -170,7 +184,7 @@ function LoginPage() {
           Sign in
         </button>
         <p className="mt-4 text-center text-xs text-slate-500">
-          Default: admin / Admin123!
+          Defaults: admin / Admin123! · branchmanager / Manager123!
         </p>
       </form>
     </div>
@@ -184,6 +198,7 @@ function Layout({ children }: { children: React.ReactNode }) {
   const logout = () => {
     localStorage.removeItem('transport_token')
     localStorage.removeItem('transport_role')
+    localStorage.removeItem('transport_branch_id')
     navigate('/login')
   }
 
@@ -197,20 +212,35 @@ function Layout({ children }: { children: React.ReactNode }) {
               <Users size={16} /> Approvals
             </Link>
           )}
+          {role === 'Admin' && (
+            <Link className="flex items-center gap-1 hover:text-violet-400" to="/branch-managers">
+              <UserCog size={16} /> Branch managers
+            </Link>
+          )}
           <Link className="flex items-center gap-1 hover:text-violet-400" to="/map">
             <MapPin size={16} /> Live map
           </Link>
-          {role === 'Admin' && (
+          {(role === 'Admin' || role === 'BranchManager') && (
+            <Link className="flex items-center gap-1 hover:text-violet-400" to="/reports">
+              <BarChart3 size={16} /> Reports
+            </Link>
+          )}
+          {(role === 'Admin' || role === 'BranchManager') && (
             <Link className="flex items-center gap-1 hover:text-violet-400" to="/branches">
               <Building2 size={16} /> Branches
             </Link>
           )}
-          {role === 'Admin' && (
+          {(role === 'Admin' || role === 'BranchManager') && (
+            <Link className="flex items-center gap-1 hover:text-violet-400" to="/staff">
+              <Users size={16} /> Staff
+            </Link>
+          )}
+          {(role === 'Admin' || role === 'BranchManager') && (
             <Link className="flex items-center gap-1 hover:text-violet-400" to="/products">
               <Package size={16} /> Products
             </Link>
           )}
-          {role === 'Admin' && (
+          {(role === 'Admin' || role === 'BranchManager') && (
             <Link className="flex items-center gap-1 hover:text-violet-400" to="/qr">
               <LayoutDashboard size={16} /> New product
             </Link>
@@ -233,16 +263,23 @@ function Layout({ children }: { children: React.ReactNode }) {
 function ApprovalsPage() {
   const [rows, setRows] = useState<PendingDriver[]>([])
   const [approved, setApproved] = useState<ApprovedDriver[]>([])
+  const [branches, setBranches] = useState<Branch[]>([])
   const [loading, setLoading] = useState(true)
+  const [driverBranch, setDriverBranch] = useState<Record<number, number>>({})
+  const [savingDriverId, setSavingDriverId] = useState<number | null>(null)
+  const [error, setError] = useState<string | null>(null)
 
   const load = useCallback(async () => {
     setLoading(true)
-    const [pendingRes, approvedRes] = await Promise.all([
+    setError(null)
+    const [pendingRes, approvedRes, branchesRes] = await Promise.all([
       apiFetch('/api/drivers/pending'),
       apiFetch('/api/drivers/approved'),
+      apiFetch('/api/branches'),
     ])
     if (pendingRes.ok) setRows(await pendingRes.json())
     if (approvedRes.ok) setApproved(await approvedRes.json())
+    if (branchesRes.ok) setBranches(await branchesRes.json())
     setLoading(false)
   }, [])
 
@@ -252,13 +289,47 @@ function ApprovalsPage() {
 
   const approve = async (id: number) => {
     const res = await apiFetch(`/api/drivers/${id}/approve`, { method: 'PATCH' })
-    if (res.ok) await load()
+    if (!res.ok) {
+      const j = await res.json().catch(() => ({}))
+      setError((j as { error?: string }).error ?? 'Could not approve driver.')
+      return
+    }
+    await load()
   }
+
+  const updateDriverBranch = async (id: number, fallbackBranchId: number | null) => {
+    const branchId = driverBranch[id] ?? fallbackBranchId
+    if (!branchId) return
+    setSavingDriverId(id)
+    setError(null)
+    const res = await apiFetch(`/api/drivers/${id}/branch`, {
+      method: 'PATCH',
+      body: JSON.stringify({ branchId }),
+    })
+    setSavingDriverId(null)
+    if (!res.ok) {
+      const j = await res.json().catch(() => ({}))
+      setError((j as { error?: string }).error ?? 'Could not update driver branch.')
+      return
+    }
+    await load()
+  }
+
+  const branchOptions = branches.map((b) => (
+    <option key={b.id} value={b.id}>
+      {b.branchName} ({b.code})
+    </option>
+  ))
 
   if (loading) return <p className="text-slate-400">Loading…</p>
 
   return (
     <div className="space-y-10">
+      {error && (
+        <p className="rounded-lg border border-red-900/50 bg-red-950/30 px-3 py-2 text-sm text-red-400">
+          {error}
+        </p>
+      )}
       <div>
         <h2 className="mb-4 text-xl font-semibold text-white">Pending driver approvals</h2>
         <p className="mb-3 text-sm text-slate-500">
@@ -271,6 +342,7 @@ function ApprovalsPage() {
                 <th className="px-4 py-3">Name</th>
                 <th className="px-4 py-3">Phone</th>
                 <th className="px-4 py-3">Vehicle</th>
+                <th className="px-4 py-3">Branch</th>
                 <th className="px-4 py-3"></th>
               </tr>
             </thead>
@@ -280,6 +352,7 @@ function ApprovalsPage() {
                   <td className="px-4 py-3">{r.fullName}</td>
                   <td className="px-4 py-3">{r.phone}</td>
                   <td className="px-4 py-3">{r.vehicleNumber}</td>
+                  <td className="px-4 py-3 text-slate-300">{r.branchName ?? '—'}</td>
                   <td className="px-4 py-3 text-right">
                     <button
                       type="button"
@@ -293,7 +366,7 @@ function ApprovalsPage() {
               ))}
               {rows.length === 0 && (
                 <tr>
-                  <td className="px-4 py-6 text-slate-500" colSpan={4}>
+                  <td className="px-4 py-6 text-slate-500" colSpan={5}>
                     No pending drivers.
                   </td>
                 </tr>
@@ -315,8 +388,9 @@ function ApprovalsPage() {
                 <th className="px-4 py-3">Name</th>
                 <th className="px-4 py-3">Phone</th>
                 <th className="px-4 py-3">Vehicle</th>
-                <th className="px-4 py-3">Branch id</th>
+                <th className="px-4 py-3">Branch</th>
                 <th className="px-4 py-3">Online</th>
+                <th className="px-4 py-3 text-right">Update branch</th>
               </tr>
             </thead>
             <tbody>
@@ -325,7 +399,7 @@ function ApprovalsPage() {
                   <td className="px-4 py-3">{r.fullName}</td>
                   <td className="px-4 py-3">{r.phone}</td>
                   <td className="px-4 py-3">{r.vehicleNumber}</td>
-                  <td className="px-4 py-3 text-slate-300">{r.branchId ?? '—'}</td>
+                  <td className="px-4 py-3 text-slate-300">{r.branchName ?? '—'}</td>
                   <td className="px-4 py-3">
                     {r.isOnline ? (
                       <span className="text-emerald-400">Yes</span>
@@ -333,11 +407,36 @@ function ApprovalsPage() {
                       <span className="text-slate-500">No</span>
                     )}
                   </td>
+                  <td className="px-4 py-3 text-right">
+                    <div className="inline-flex items-center gap-2">
+                      <select
+                        value={driverBranch[r.id] ?? r.branchId ?? ''}
+                        onChange={(e) =>
+                          setDriverBranch((prev) => ({
+                            ...prev,
+                            [r.id]: Number(e.target.value),
+                          }))
+                        }
+                        className="rounded-lg border border-slate-700 bg-slate-950 px-2 py-1 text-xs text-white"
+                      >
+                        <option value="">Select branch</option>
+                        {branchOptions}
+                      </select>
+                      <button
+                        type="button"
+                        disabled={savingDriverId === r.id}
+                        onClick={() => void updateDriverBranch(r.id, r.branchId)}
+                        className="rounded-lg border border-violet-700/60 px-2 py-1 text-xs text-violet-200 hover:bg-violet-900/40 disabled:opacity-50"
+                      >
+                        {savingDriverId === r.id ? 'Saving…' : 'Save'}
+                      </button>
+                    </div>
+                  </td>
                 </tr>
               ))}
               {approved.length === 0 && (
                 <tr>
-                  <td className="px-4 py-6 text-slate-500" colSpan={5}>
+                  <td className="px-4 py-6 text-slate-500" colSpan={6}>
                     No approved drivers yet. Approve a driver above to see them here.
                   </td>
                 </tr>
@@ -352,6 +451,8 @@ function ApprovalsPage() {
 
 function BranchesPage() {
   const role = localStorage.getItem('transport_role')
+  const isAdmin = role === 'Admin'
+  const isBranchManager = role === 'BranchManager'
   const [branches, setBranches] = useState<Branch[]>([])
   const [loading, setLoading] = useState(true)
   const [formName, setFormName] = useState('')
@@ -369,11 +470,11 @@ function BranchesPage() {
   }, [])
 
   useEffect(() => {
-    if (role !== 'Admin') return
+    if (!isAdmin && !isBranchManager) return
     void load()
-  }, [load, role])
+  }, [load, isAdmin, isBranchManager])
 
-  if (role !== 'Admin') {
+  if (!isAdmin && !isBranchManager) {
     return <Navigate to="/map" replace />
   }
 
@@ -439,65 +540,69 @@ function BranchesPage() {
     <div>
       <h2 className="mb-4 text-xl font-semibold text-white">Branches</h2>
       <p className="mb-6 text-sm text-slate-400">
-        Create and manage branch locations. Branch codes must be unique.
+        {isAdmin
+          ? 'Create and manage branch locations. Branch codes must be unique.'
+          : 'All hubs (read-only). Only an admin can add, edit, or remove branches.'}
       </p>
 
-      <form
-        onSubmit={saveBranch}
-        className="mb-8 rounded-xl border border-slate-800 bg-slate-900/40 p-6"
-      >
-        <h3 className="mb-4 text-sm font-medium text-slate-300">
-          {editingId ? 'Edit branch' : 'Add branch'}
-        </h3>
-        <div className="grid gap-4 md:grid-cols-2">
-          <div>
-            <label className="text-sm text-slate-400">Branch name</label>
-            <input
-              className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-white"
-              value={formName}
-              onChange={(e) => setFormName(e.target.value)}
-              required
-            />
+      {isAdmin && (
+        <form
+          onSubmit={saveBranch}
+          className="mb-8 rounded-xl border border-slate-800 bg-slate-900/40 p-6"
+        >
+          <h3 className="mb-4 text-sm font-medium text-slate-300">
+            {editingId ? 'Edit branch' : 'Add branch'}
+          </h3>
+          <div className="grid gap-4 md:grid-cols-2">
+            <div>
+              <label className="text-sm text-slate-400">Branch name</label>
+              <input
+                className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-white"
+                value={formName}
+                onChange={(e) => setFormName(e.target.value)}
+                required
+              />
+            </div>
+            <div>
+              <label className="text-sm text-slate-400">Code</label>
+              <input
+                className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 font-mono text-white"
+                value={formCode}
+                onChange={(e) => setFormCode(e.target.value)}
+                required
+              />
+            </div>
+            <div className="md:col-span-2">
+              <label className="text-sm text-slate-400">Address</label>
+              <input
+                className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-white"
+                value={formAddress}
+                onChange={(e) => setFormAddress(e.target.value)}
+                required
+              />
+            </div>
           </div>
-          <div>
-            <label className="text-sm text-slate-400">Code</label>
-            <input
-              className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 font-mono text-white"
-              value={formCode}
-              onChange={(e) => setFormCode(e.target.value)}
-              required
-            />
-          </div>
-          <div className="md:col-span-2">
-            <label className="text-sm text-slate-400">Address</label>
-            <input
-              className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-white"
-              value={formAddress}
-              onChange={(e) => setFormAddress(e.target.value)}
-              required
-            />
-          </div>
-        </div>
-        {error && <p className="mt-3 text-sm text-red-400">{error}</p>}
-        <div className="mt-4 flex flex-wrap gap-2">
-          <button
-            type="submit"
-            disabled={saving}
-            className="rounded-lg bg-violet-600 px-4 py-2 text-white hover:bg-violet-500 disabled:opacity-50"
-          >
-            {saving ? 'Saving…' : editingId ? 'Update branch' : 'Create branch'}
-          </button>
-          {editingId && (
+          {error && <p className="mt-3 text-sm text-red-400">{error}</p>}
+          <div className="mt-4 flex flex-wrap gap-2">
             <button
-              type="button"
-              onClick={resetForm}
-              className="rounded-lg border border-slate-600 px-4 py-2 text-slate-300 hover:bg-slate-800"
+              type="submit"
+              disabled={saving}
+              className="rounded-lg bg-violet-600 px-4 py-2 text-white hover:bg-violet-500 disabled:opacity-50"
             >
-              Cancel
+              {saving ? 'Saving…' : editingId ? 'Update branch' : 'Create branch'}
             </button>
-          )}
-        </div>
-      </form>
+            {editingId && (
+              <button
+                type="button"
+                onClick={resetForm}
+                className="rounded-lg border border-slate-600 px-4 py-2 text-slate-300 hover:bg-slate-800"
+              >
+                Cancel
+              </button>
+            )}
+          </div>
+        </form>
+      )}
 
       <div className="overflow-hidden rounded-xl border border-slate-800">
         <table className="w-full text-left text-sm">
@@ -506,7 +611,7 @@ function BranchesPage() {
               <th className="px-4 py-3">Name</th>
               <th className="px-4 py-3">Code</th>
               <th className="px-4 py-3">Address</th>
-              <th className="px-4 py-3"></th>
+              {isAdmin && <th className="px-4 py-3"></th>}
             </tr>
           </thead>
           <tbody>
@@ -515,27 +620,29 @@ function BranchesPage() {
                 <td className="px-4 py-3">{b.branchName}</td>
                 <td className="px-4 py-3 font-mono text-xs">{b.code}</td>
                 <td className="px-4 py-3 text-slate-300">{b.address}</td>
-                <td className="px-4 py-3 text-right">
-                  <button
-                    type="button"
-                    onClick={() => startEdit(b)}
-                    className="mr-2 inline-flex items-center gap-1 rounded-lg border border-slate-600 px-2 py-1 text-slate-300 hover:bg-slate-800"
-                  >
-                    <Pencil size={14} /> Edit
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => void remove(b.id)}
-                    className="inline-flex items-center gap-1 rounded-lg border border-red-900/50 px-2 py-1 text-red-400 hover:bg-red-950/40"
-                  >
-                    <Trash2 size={14} /> Delete
-                  </button>
-                </td>
+                {isAdmin && (
+                  <td className="px-4 py-3 text-right">
+                    <button
+                      type="button"
+                      onClick={() => startEdit(b)}
+                      className="mr-2 inline-flex items-center gap-1 rounded-lg border border-slate-600 px-2 py-1 text-slate-300 hover:bg-slate-800"
+                    >
+                      <Pencil size={14} /> Edit
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void remove(b.id)}
+                      className="inline-flex items-center gap-1 rounded-lg border border-red-900/50 px-2 py-1 text-red-400 hover:bg-red-950/40"
+                    >
+                      <Trash2 size={14} /> Delete
+                    </button>
+                  </td>
+                )}
               </tr>
             ))}
             {branches.length === 0 && (
               <tr>
-                <td className="px-4 py-6 text-slate-500" colSpan={4}>
+                <td className="px-4 py-6 text-slate-500" colSpan={isAdmin ? 4 : 3}>
                   No branches yet.
                 </td>
               </tr>
@@ -543,6 +650,645 @@ function BranchesPage() {
           </tbody>
         </table>
       </div>
+    </div>
+  )
+}
+
+function StaffPage() {
+  const role = localStorage.getItem('transport_role')
+  const isAdmin = role === 'Admin'
+  const isBranchManager = role === 'BranchManager'
+  const [staffRows, setStaffRows] = useState<StaffRow[]>([])
+  const [branches, setBranches] = useState<Branch[]>([])
+  const [loading, setLoading] = useState(true)
+  const [editing, setEditing] = useState<StaffRow | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [saving, setSaving] = useState(false)
+  const [creating, setCreating] = useState(false)
+  const [newName, setNewName] = useState('')
+  const [newPhone, setNewPhone] = useState('')
+  const [newPassword, setNewPassword] = useState('')
+  const [newBranchId, setNewBranchId] = useState(0)
+
+  const load = useCallback(async () => {
+    setLoading(true)
+    setError(null)
+    const [staffRes, branchRes] = await Promise.all([
+      apiFetch('/api/staff'),
+      apiFetch('/api/branches'),
+    ])
+    if (staffRes.ok) setStaffRows(await staffRes.json())
+    if (branchRes.ok) setBranches(await branchRes.json())
+    setLoading(false)
+  }, [])
+
+  useEffect(() => {
+    if (!isAdmin && !isBranchManager) return
+    void load()
+  }, [load, isAdmin, isBranchManager])
+
+  useEffect(() => {
+    if (!isBranchManager) return
+    const bid = Number(localStorage.getItem('transport_branch_id'))
+    if (Number.isFinite(bid) && bid > 0) setNewBranchId(bid)
+  }, [isBranchManager, branches])
+
+  if (!isAdmin && !isBranchManager) return <Navigate to="/map" replace />
+  if (loading) return <p className="text-slate-400">Loading…</p>
+
+  const createStaff = async (e: React.FormEvent) => {
+    e.preventDefault()
+    const mgrBid = Number(localStorage.getItem('transport_branch_id'))
+    const branchIdToUse =
+      isBranchManager && Number.isFinite(mgrBid) && mgrBid > 0 ? mgrBid : newBranchId
+    if (!branchIdToUse) {
+      setError('Select a branch for the new staff account.')
+      return
+    }
+    setError(null)
+    setCreating(true)
+    const res = await apiFetch('/api/staff', {
+      method: 'POST',
+      body: JSON.stringify({
+        fullName: newName.trim(),
+        phone: newPhone.trim(),
+        password: newPassword,
+        branchId: branchIdToUse,
+      }),
+    })
+    setCreating(false)
+    if (!res.ok) {
+      const j = await res.json().catch(() => ({}))
+      setError((j as { error?: string }).error ?? 'Could not create staff.')
+      return
+    }
+    setNewName('')
+    setNewPhone('')
+    setNewPassword('')
+    const bid = Number(localStorage.getItem('transport_branch_id'))
+    if (isBranchManager && Number.isFinite(bid) && bid > 0) setNewBranchId(bid)
+    else setNewBranchId(0)
+    await load()
+  }
+
+  const saveEdit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!editing) return
+    const form = e.target as HTMLFormElement
+    const fd = new FormData(form)
+    const lockedBid = Number(localStorage.getItem('transport_branch_id'))
+    const branchId = isBranchManager && Number.isFinite(lockedBid) && lockedBid > 0
+      ? lockedBid
+      : Number(fd.get('branchId'))
+    if (!Number.isFinite(branchId) || branchId <= 0) {
+      setError('Select a valid branch.')
+      return
+    }
+
+    setError(null)
+    setSaving(true)
+    const res = await apiFetch(`/api/staff/${editing.id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({
+        fullName: String(fd.get('fullName') ?? '').trim(),
+        phone: String(fd.get('phone') ?? '').trim(),
+        branchId,
+        isActive: fd.get('isActive') === 'on',
+      }),
+    })
+    setSaving(false)
+
+    if (!res.ok) {
+      const j = await res.json().catch(() => ({}))
+      setError((j as { error?: string }).error ?? 'Could not save staff.')
+      return
+    }
+    setEditing(null)
+    await load()
+  }
+
+  const branchOptions = branches.map((b) => (
+    <option key={b.id} value={b.id}>
+      {b.branchName} ({b.code})
+    </option>
+  ))
+
+  const removeStaff = async (s: StaffRow) => {
+    if (!window.confirm(`Delete staff ${s.fullName} (${s.phone})?`)) return
+    setError(null)
+    const res = await apiFetch(`/api/staff/${s.id}`, { method: 'DELETE' })
+    if (!res.ok) {
+      const j = await res.json().catch(() => ({}))
+      setError((j as { error?: string }).error ?? 'Could not delete staff.')
+      return
+    }
+    if (editing?.id === s.id) setEditing(null)
+    await load()
+  }
+
+  return (
+    <div>
+      <h2 className="mb-4 text-xl font-semibold text-white">Staff list</h2>
+      <p className="mb-6 text-sm text-slate-400">
+        {isBranchManager
+          ? 'Create and manage staff accounts for your branch only.'
+          : 'Manage staff account details and branch assignment by branch name.'}
+      </p>
+
+      {error && (
+        <p className="mb-4 rounded-lg border border-red-900/50 bg-red-950/30 px-3 py-2 text-sm text-red-400">
+          {error}
+        </p>
+      )}
+
+      <form
+        onSubmit={createStaff}
+        className="mb-8 rounded-xl border border-slate-800 bg-slate-900/40 p-6"
+      >
+        <h3 className="mb-4 text-sm font-medium text-slate-300">Create staff</h3>
+        <div className="grid gap-3 md:grid-cols-2">
+          <div>
+            <label className="text-sm text-slate-400">Full name</label>
+            <input
+              value={newName}
+              onChange={(e) => setNewName(e.target.value)}
+              required
+              className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-white"
+            />
+          </div>
+          <div>
+            <label className="text-sm text-slate-400">Phone / login ID</label>
+            <input
+              value={newPhone}
+              onChange={(e) => setNewPhone(e.target.value)}
+              required
+              className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-white"
+            />
+          </div>
+          <div>
+            <label className="text-sm text-slate-400">Password</label>
+            <input
+              type="password"
+              value={newPassword}
+              onChange={(e) => setNewPassword(e.target.value)}
+              required
+              className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-white"
+            />
+          </div>
+          <div>
+            <label className="text-sm text-slate-400">Branch</label>
+            <select
+              value={newBranchId || ''}
+              onChange={(e) => setNewBranchId(Number(e.target.value))}
+              required
+              disabled={isBranchManager}
+              className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-white disabled:opacity-70"
+            >
+              <option value="">Select branch</option>
+              {branchOptions}
+            </select>
+          </div>
+        </div>
+        <div className="mt-4">
+          <button
+            type="submit"
+            disabled={creating}
+            className="rounded-lg bg-violet-600 px-4 py-2 text-white hover:bg-violet-500 disabled:opacity-50"
+          >
+            {creating ? 'Creating…' : 'Create staff'}
+          </button>
+        </div>
+      </form>
+
+      <div className="overflow-x-auto rounded-xl border border-slate-800">
+        <table className="w-full min-w-[760px] text-left text-sm">
+          <thead className="bg-slate-900 text-slate-400">
+            <tr>
+              <th className="px-4 py-3">Name</th>
+              <th className="px-4 py-3">Phone / ID</th>
+              <th className="px-4 py-3">Branch</th>
+              <th className="px-4 py-3">Active</th>
+              <th className="px-4 py-3 text-right">Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {staffRows.map((s) => (
+              <tr key={s.id} className="border-t border-slate-800">
+                <td className="px-4 py-3">{s.fullName}</td>
+                <td className="px-4 py-3">{s.phone}</td>
+                <td className="px-4 py-3 text-slate-300">{s.branchName ?? '—'}</td>
+                <td className="px-4 py-3">
+                  {s.isActive ? (
+                    <span className="text-emerald-400">Yes</span>
+                  ) : (
+                    <span className="text-slate-500">No</span>
+                  )}
+                </td>
+                <td className="px-4 py-3 text-right">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setError(null)
+                      setEditing(s)
+                    }}
+                    className="mr-2 inline-flex items-center gap-1 rounded-lg border border-slate-600 px-2 py-1 text-slate-300 hover:bg-slate-800"
+                  >
+                    <Pencil size={14} /> Edit
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void removeStaff(s)}
+                    className="inline-flex items-center gap-1 rounded-lg border border-red-900/50 px-2 py-1 text-red-400 hover:bg-red-950/40"
+                  >
+                    <Trash2 size={14} /> Delete
+                  </button>
+                </td>
+              </tr>
+            ))}
+            {staffRows.length === 0 && (
+              <tr>
+                <td className="px-4 py-8 text-center text-slate-500" colSpan={5}>
+                  No staff accounts found.
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+
+      {editing && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 no-print">
+          <form
+            onSubmit={saveEdit}
+            className="w-full max-w-lg rounded-2xl border border-slate-700 bg-slate-900 p-6 shadow-xl"
+          >
+            <h3 className="mb-4 text-lg font-medium text-white">Edit staff</h3>
+            <div className="grid gap-3">
+              <div>
+                <label className="text-sm text-slate-400">Full name</label>
+                <input
+                  name="fullName"
+                  defaultValue={editing.fullName}
+                  required
+                  className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-white"
+                />
+              </div>
+              <div>
+                <label className="text-sm text-slate-400">Phone / login ID</label>
+                <input
+                  name="phone"
+                  defaultValue={editing.phone}
+                  required
+                  className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-white"
+                />
+              </div>
+              <div>
+                <label className="text-sm text-slate-400">Branch</label>
+                <select
+                  name="branchId"
+                  defaultValue={editing.branchId ?? ''}
+                  required
+                  disabled={isBranchManager}
+                  className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-white disabled:opacity-70"
+                >
+                  <option value="">Select branch</option>
+                  {branchOptions}
+                </select>
+              </div>
+              <label className="mt-1 inline-flex items-center gap-2 text-sm text-slate-300">
+                <input type="checkbox" name="isActive" defaultChecked={editing.isActive} />
+                Active account
+              </label>
+            </div>
+            <div className="mt-4 flex flex-wrap gap-2">
+              <button
+                type="submit"
+                disabled={saving}
+                className="rounded-lg bg-violet-600 px-4 py-2 text-white hover:bg-violet-500 disabled:opacity-50"
+              >
+                {saving ? 'Saving…' : 'Save'}
+              </button>
+              <button
+                type="button"
+                onClick={() => setEditing(null)}
+                className="rounded-lg border border-slate-600 px-4 py-2 text-slate-300 hover:bg-slate-800"
+              >
+                Cancel
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function BranchManagersPage() {
+  const role = localStorage.getItem('transport_role')
+  const [rows, setRows] = useState<StaffRow[]>([])
+  const [branches, setBranches] = useState<Branch[]>([])
+  const [loading, setLoading] = useState(true)
+  const [editing, setEditing] = useState<StaffRow | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [saving, setSaving] = useState(false)
+  const [creating, setCreating] = useState(false)
+  const [newName, setNewName] = useState('')
+  const [newPhone, setNewPhone] = useState('')
+  const [newPassword, setNewPassword] = useState('')
+  const [newBranchId, setNewBranchId] = useState(0)
+
+  const load = useCallback(async () => {
+    setLoading(true)
+    setError(null)
+    const [listRes, branchRes] = await Promise.all([
+      apiFetch('/api/branch-managers'),
+      apiFetch('/api/branches'),
+    ])
+    if (listRes.ok) setRows(await listRes.json())
+    if (branchRes.ok) setBranches(await branchRes.json())
+    setLoading(false)
+  }, [])
+
+  useEffect(() => {
+    if (role !== 'Admin') return
+    void load()
+  }, [load, role])
+
+  if (role !== 'Admin') return <Navigate to="/map" replace />
+  if (loading) return <p className="text-slate-400">Loading…</p>
+
+  const createManager = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!newBranchId) {
+      setError('Select a branch for the new branch manager.')
+      return
+    }
+    setError(null)
+    setCreating(true)
+    const res = await apiFetch('/api/branch-managers', {
+      method: 'POST',
+      body: JSON.stringify({
+        fullName: newName.trim(),
+        phone: newPhone.trim(),
+        password: newPassword,
+        branchId: newBranchId,
+      }),
+    })
+    setCreating(false)
+    if (!res.ok) {
+      const j = await res.json().catch(() => ({}))
+      setError((j as { error?: string }).error ?? 'Could not create branch manager.')
+      return
+    }
+    setNewName('')
+    setNewPhone('')
+    setNewPassword('')
+    setNewBranchId(0)
+    await load()
+  }
+
+  const saveEdit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!editing) return
+    const form = e.target as HTMLFormElement
+    const fd = new FormData(form)
+    const branchId = Number(fd.get('branchId'))
+    if (!Number.isFinite(branchId) || branchId <= 0) {
+      setError('Select a valid branch.')
+      return
+    }
+
+    setError(null)
+    setSaving(true)
+    const res = await apiFetch(`/api/branch-managers/${editing.id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({
+        fullName: String(fd.get('fullName') ?? '').trim(),
+        phone: String(fd.get('phone') ?? '').trim(),
+        branchId,
+        isActive: fd.get('isActive') === 'on',
+      }),
+    })
+    setSaving(false)
+
+    if (!res.ok) {
+      const j = await res.json().catch(() => ({}))
+      setError((j as { error?: string }).error ?? 'Could not save branch manager.')
+      return
+    }
+    setEditing(null)
+    await load()
+  }
+
+  const branchOptions = branches.map((b) => (
+    <option key={b.id} value={b.id}>
+      {b.branchName} ({b.code})
+    </option>
+  ))
+
+  const remove = async (s: StaffRow) => {
+    if (!window.confirm(`Delete branch manager ${s.fullName} (${s.phone})?`)) return
+    setError(null)
+    const res = await apiFetch(`/api/branch-managers/${s.id}`, { method: 'DELETE' })
+    if (!res.ok) {
+      const j = await res.json().catch(() => ({}))
+      setError((j as { error?: string }).error ?? 'Could not delete branch manager.')
+      return
+    }
+    if (editing?.id === s.id) setEditing(null)
+    await load()
+  }
+
+  return (
+    <div>
+      <h2 className="mb-4 text-xl font-semibold text-white">Branch managers</h2>
+      <p className="mb-6 text-sm text-slate-400">
+        Create and manage branch manager accounts. Each manager is linked to one branch and can only
+        access that branch in the console.
+      </p>
+
+      {error && (
+        <p className="mb-4 rounded-lg border border-red-900/50 bg-red-950/30 px-3 py-2 text-sm text-red-400">
+          {error}
+        </p>
+      )}
+
+      <form
+        onSubmit={createManager}
+        className="mb-8 rounded-xl border border-slate-800 bg-slate-900/40 p-6"
+      >
+        <h3 className="mb-4 text-sm font-medium text-slate-300">Create branch manager</h3>
+        <div className="grid gap-3 md:grid-cols-2">
+          <div>
+            <label className="text-sm text-slate-400">Full name</label>
+            <input
+              value={newName}
+              onChange={(e) => setNewName(e.target.value)}
+              required
+              className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-white"
+            />
+          </div>
+          <div>
+            <label className="text-sm text-slate-400">Phone / login ID</label>
+            <input
+              value={newPhone}
+              onChange={(e) => setNewPhone(e.target.value)}
+              required
+              className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-white"
+            />
+          </div>
+          <div>
+            <label className="text-sm text-slate-400">Password</label>
+            <input
+              type="password"
+              value={newPassword}
+              onChange={(e) => setNewPassword(e.target.value)}
+              required
+              className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-white"
+            />
+          </div>
+          <div>
+            <label className="text-sm text-slate-400">Branch</label>
+            <select
+              value={newBranchId || ''}
+              onChange={(e) => setNewBranchId(Number(e.target.value))}
+              required
+              className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-white"
+            >
+              <option value="">Select branch</option>
+              {branchOptions}
+            </select>
+          </div>
+        </div>
+        <div className="mt-4">
+          <button
+            type="submit"
+            disabled={creating}
+            className="rounded-lg bg-violet-600 px-4 py-2 text-white hover:bg-violet-500 disabled:opacity-50"
+          >
+            {creating ? 'Creating…' : 'Create branch manager'}
+          </button>
+        </div>
+      </form>
+
+      <div className="overflow-x-auto rounded-xl border border-slate-800">
+        <table className="w-full min-w-[760px] text-left text-sm">
+          <thead className="bg-slate-900 text-slate-400">
+            <tr>
+              <th className="px-4 py-3">Name</th>
+              <th className="px-4 py-3">Phone / ID</th>
+              <th className="px-4 py-3">Branch</th>
+              <th className="px-4 py-3">Active</th>
+              <th className="px-4 py-3 text-right">Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((s) => (
+              <tr key={s.id} className="border-t border-slate-800">
+                <td className="px-4 py-3">{s.fullName}</td>
+                <td className="px-4 py-3">{s.phone}</td>
+                <td className="px-4 py-3 text-slate-300">{s.branchName ?? '—'}</td>
+                <td className="px-4 py-3">
+                  {s.isActive ? (
+                    <span className="text-emerald-400">Yes</span>
+                  ) : (
+                    <span className="text-slate-500">No</span>
+                  )}
+                </td>
+                <td className="px-4 py-3 text-right">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setError(null)
+                      setEditing(s)
+                    }}
+                    className="mr-2 inline-flex items-center gap-1 rounded-lg border border-slate-600 px-2 py-1 text-slate-300 hover:bg-slate-800"
+                  >
+                    <Pencil size={14} /> Edit
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void remove(s)}
+                    className="inline-flex items-center gap-1 rounded-lg border border-red-900/50 px-2 py-1 text-red-400 hover:bg-red-950/40"
+                  >
+                    <Trash2 size={14} /> Delete
+                  </button>
+                </td>
+              </tr>
+            ))}
+            {rows.length === 0 && (
+              <tr>
+                <td className="px-4 py-8 text-center text-slate-500" colSpan={5}>
+                  No branch manager accounts yet.
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+
+      {editing && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 no-print">
+          <form
+            onSubmit={saveEdit}
+            className="w-full max-w-lg rounded-2xl border border-slate-700 bg-slate-900 p-6 shadow-xl"
+          >
+            <h3 className="mb-4 text-lg font-medium text-white">Edit branch manager</h3>
+            <div className="grid gap-3">
+              <div>
+                <label className="text-sm text-slate-400">Full name</label>
+                <input
+                  name="fullName"
+                  defaultValue={editing.fullName}
+                  required
+                  className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-white"
+                />
+              </div>
+              <div>
+                <label className="text-sm text-slate-400">Phone / login ID</label>
+                <input
+                  name="phone"
+                  defaultValue={editing.phone}
+                  required
+                  className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-white"
+                />
+              </div>
+              <div>
+                <label className="text-sm text-slate-400">Branch</label>
+                <select
+                  name="branchId"
+                  defaultValue={editing.branchId ?? ''}
+                  required
+                  className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-white"
+                >
+                  <option value="">Select branch</option>
+                  {branchOptions}
+                </select>
+              </div>
+              <label className="mt-1 inline-flex items-center gap-2 text-sm text-slate-300">
+                <input type="checkbox" name="isActive" defaultChecked={editing.isActive} />
+                Active account
+              </label>
+            </div>
+            <div className="mt-4 flex flex-wrap gap-2">
+              <button
+                type="submit"
+                disabled={saving}
+                className="rounded-lg bg-violet-600 px-4 py-2 text-white hover:bg-violet-500 disabled:opacity-50"
+              >
+                {saving ? 'Saving…' : 'Save'}
+              </button>
+              <button
+                type="button"
+                onClick={() => setEditing(null)}
+                className="rounded-lg border border-slate-600 px-4 py-2 text-slate-300 hover:bg-slate-800"
+              >
+                Cancel
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
     </div>
   )
 }
@@ -816,8 +1562,8 @@ function LiveMapPage() {
             })}
             {drivers.length === 0 && (
               <li className="rounded-lg border border-dashed border-slate-700 px-3 py-4 text-slate-500">
-                No drivers in scope. Admins see all approved drivers; staff see their branch. Positions update when
-                drivers run the mobile app with location on.
+                No drivers in scope. Admins see all approved drivers; branch managers and staff see their branch.
+                Positions update when drivers run the mobile app with location on.
               </li>
             )}
           </ul>
@@ -829,6 +1575,10 @@ function LiveMapPage() {
 
 function ProductsPage() {
   const role = localStorage.getItem('transport_role')
+  const isAdmin = role === 'Admin'
+  const isBranchManager = role === 'BranchManager'
+  const branchId = Number(localStorage.getItem('transport_branch_id'))
+  const managerBranchId = Number.isFinite(branchId) && branchId > 0 ? branchId : null
   const location = useLocation()
   const navigate = useNavigate()
   const [products, setProducts] = useState<ProductRow[]>([])
@@ -841,6 +1591,11 @@ function ProductsPage() {
   } | null>(null)
   const [formError, setFormError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
+  const [delivering, setDelivering] = useState<ProductRow | null>(null)
+  const [deliverReceiverPhone, setDeliverReceiverPhone] = useState('')
+  const [deliverPaidBySender, setDeliverPaidBySender] = useState(true)
+  const [deliverPaidAtBranch, setDeliverPaidAtBranch] = useState(false)
+  const [deliverSaving, setDeliverSaving] = useState(false)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -854,9 +1609,9 @@ function ProductsPage() {
   }, [])
 
   useEffect(() => {
-    if (role !== 'Admin') return
+    if (!isAdmin && !isBranchManager) return
     void load()
-  }, [load, role])
+  }, [load, isAdmin, isBranchManager])
 
   useEffect(() => {
     const s = location.state as { openLabel?: { trackingNumber: string; shippingPrice: number } } | null
@@ -866,7 +1621,7 @@ function ProductsPage() {
     }
   }, [location.pathname, location.state, navigate])
 
-  if (role !== 'Admin') {
+  if (!isAdmin && !isBranchManager) {
     return <Navigate to="/map" replace />
   }
 
@@ -926,11 +1681,62 @@ function ProductsPage() {
     await load()
   }
 
+  const openDeliver = (p: ProductRow) => {
+    setFormError(null)
+    setDelivering(p)
+    setDeliverReceiverPhone('')
+    setDeliverPaidBySender(true)
+    setDeliverPaidAtBranch(false)
+  }
+
+  const confirmDeliver = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!delivering) return
+    if (!deliverReceiverPhone.trim()) {
+      setFormError('Enter receiver phone for number verification.')
+      return
+    }
+    if (!deliverPaidBySender && !deliverPaidAtBranch) {
+      setFormError('If sender did not pay, confirm payment at branch before delivery.')
+      return
+    }
+    setDeliverSaving(true)
+    const res = await apiFetch(`/api/products/${delivering.id}/deliver`, {
+      method: 'PATCH',
+      body: JSON.stringify({
+        receiverPhone: deliverReceiverPhone.trim(),
+        paidBySender: deliverPaidBySender,
+        paymentReceivedAtBranch: deliverPaidAtBranch,
+      }),
+    })
+    setDeliverSaving(false)
+    if (!res.ok) {
+      const j = await res.json().catch(() => ({}))
+      setFormError((j as { error?: string }).error ?? 'Could not mark delivered')
+      return
+    }
+    setDelivering(null)
+    await load()
+  }
+
   const branchOptions = branches.map((b) => (
     <option key={b.id} value={b.id}>
       {b.branchName} ({b.code})
     </option>
   ))
+
+  const branchScopeText = (p: ProductRow): string => {
+    if (!isBranchManager || managerBranchId == null) return ''
+    const fromHere = p.originBranchId === managerBranchId
+    const toHere = p.destinationBranchId === managerBranchId
+    if (fromHere && toHere) return 'Sending + Receiving'
+    if (fromHere) return 'Sending'
+    if (toHere) return 'Receiving'
+    return 'In scope'
+  }
+
+  const canManagerDeliver = (p: ProductRow): boolean =>
+    isBranchManager && managerBranchId != null && p.destinationBranchId === managerBranchId
 
   if (loading) return <p className="text-slate-400">Loading…</p>
 
@@ -940,8 +1746,9 @@ function ProductsPage() {
         <div>
           <h2 className="text-xl font-semibold text-white">Products</h2>
           <p className="mt-1 text-sm text-slate-400">
-            View, edit, or delete shipments. Reprint the shipping label QR anytime. Products on an
-            active trip cannot be deleted.
+            {isBranchManager
+              ? 'Shipments linked to your branch (origin, destination, or current location). Reprint QR labels anytime.'
+              : 'View, edit, or delete shipments. Reprint the shipping label QR anytime. Products on an active trip cannot be deleted.'}
           </p>
         </div>
         <Link
@@ -964,7 +1771,9 @@ function ProductsPage() {
             <tr>
               <th className="px-3 py-3">Tracking</th>
               <th className="px-3 py-3">Description</th>
-              <th className="px-3 py-3">Route</th>
+              <th className="px-3 py-3">Origin branch</th>
+              <th className="px-3 py-3">Destination branch</th>
+              {isBranchManager && <th className="px-3 py-3">Your scope</th>}
               <th className="px-3 py-3">Price</th>
               <th className="px-3 py-3">Status</th>
               <th className="px-3 py-3 text-right">Actions</th>
@@ -977,9 +1786,9 @@ function ProductsPage() {
                 <td className="max-w-[140px] truncate px-3 py-2 text-slate-300" title={p.description}>
                   {p.description}
                 </td>
-                <td className="px-3 py-2 text-xs text-slate-400">
-                  {p.originBranchName} → {p.destinationBranchName}
-                </td>
+                <td className="px-3 py-2 text-xs text-slate-300">{p.originBranchName}</td>
+                <td className="px-3 py-2 text-xs text-slate-300">{p.destinationBranchName}</td>
+                {isBranchManager && <td className="px-3 py-2 text-xs text-violet-300">{branchScopeText(p)}</td>}
                 <td className="px-3 py-2 text-slate-300">{p.shippingPrice.toFixed(2)}</td>
                 <td className="px-3 py-2 text-slate-400">{p.status}</td>
                 <td className="px-3 py-2 text-right">
@@ -1003,6 +1812,15 @@ function ProductsPage() {
                   >
                     <Pencil size={12} /> Edit
                   </button>
+                  {p.status === 'Downloaded' && (!isBranchManager || canManagerDeliver(p)) && (
+                    <button
+                      type="button"
+                      onClick={() => openDeliver(p)}
+                      className="mr-1 inline-flex items-center gap-1 rounded border border-emerald-700/50 px-2 py-1 text-xs text-emerald-300 hover:bg-emerald-900/30"
+                    >
+                      Deliver
+                    </button>
+                  )}
                   <button
                     type="button"
                     onClick={() => void remove(p)}
@@ -1015,7 +1833,7 @@ function ProductsPage() {
             ))}
             {products.length === 0 && (
               <tr>
-                <td className="px-4 py-8 text-center text-slate-500" colSpan={6}>
+                <td className="px-4 py-8 text-center text-slate-500" colSpan={isBranchManager ? 8 : 7}>
                   No products yet. Use <Link className="text-violet-400 hover:underline" to="/qr">New product</Link> to create one.
                 </td>
               </tr>
@@ -1182,12 +2000,77 @@ function ProductsPage() {
           </form>
         </div>
       )}
+
+      {delivering && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 no-print">
+          <form
+            onSubmit={confirmDeliver}
+            className="w-full max-w-lg rounded-2xl border border-slate-700 bg-slate-900 p-6 shadow-xl"
+          >
+            <h3 className="mb-4 text-lg font-medium text-white">Mark as delivered</h3>
+            <p className="mb-4 text-sm text-slate-400">
+              Tracking: <span className="font-mono text-slate-200">{delivering.trackingNumber}</span>
+            </p>
+
+            <div className="space-y-3">
+              <div>
+                <label className="text-sm text-slate-400">Receiver phone (number check)</label>
+                <input
+                  value={deliverReceiverPhone}
+                  onChange={(e) => setDeliverReceiverPhone(e.target.value)}
+                  required
+                  className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-white"
+                />
+              </div>
+
+              <label className="inline-flex items-center gap-2 text-sm text-slate-300">
+                <input
+                  type="checkbox"
+                  checked={deliverPaidBySender}
+                  onChange={(e) => setDeliverPaidBySender(e.target.checked)}
+                />
+                Shipping paid by sender
+              </label>
+
+              {!deliverPaidBySender && (
+                <label className="inline-flex items-center gap-2 text-sm text-slate-300">
+                  <input
+                    type="checkbox"
+                    checked={deliverPaidAtBranch}
+                    onChange={(e) => setDeliverPaidAtBranch(e.target.checked)}
+                  />
+                  Payment received at branch from customer
+                </label>
+              )}
+            </div>
+
+            <div className="mt-5 flex flex-wrap gap-2">
+              <button
+                type="submit"
+                disabled={deliverSaving}
+                className="rounded-lg bg-emerald-600 px-4 py-2 text-white hover:bg-emerald-500 disabled:opacity-50"
+              >
+                {deliverSaving ? 'Saving…' : 'Confirm delivery'}
+              </button>
+              <button
+                type="button"
+                onClick={() => setDelivering(null)}
+                className="rounded-lg border border-slate-600 px-4 py-2 text-slate-300 hover:bg-slate-800"
+              >
+                Cancel
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
     </div>
   )
 }
 
 function QrLabelPage() {
   const role = localStorage.getItem('transport_role')
+  const isAdmin = role === 'Admin'
+  const isBranchManager = role === 'BranchManager'
   const [branches, setBranches] = useState<Branch[]>([])
   const [desc, setDesc] = useState('')
   const [senderName, setSenderName] = useState('')
@@ -1204,20 +2087,25 @@ function QrLabelPage() {
   const navigate = useNavigate()
 
   useEffect(() => {
-    if (role !== 'Admin') return
+    if (!isAdmin && !isBranchManager) return
     void (async () => {
       const res = await apiFetch('/api/branches')
       if (!res.ok) return
       const list: Branch[] = await res.json()
       setBranches(list)
-      if (list.length > 0) {
+      const myBid = Number(localStorage.getItem('transport_branch_id'))
+      if (isBranchManager && Number.isFinite(myBid) && myBid > 0) {
+        setOriginBranchId(myBid)
+        const other = list.find((b) => b.id !== myBid)?.id ?? list[0]?.id ?? 0
+        setDestinationBranchId(other)
+      } else if (list.length > 0) {
         setOriginBranchId(list[0].id)
         setDestinationBranchId(list[Math.min(1, list.length - 1)].id)
       }
     })()
-  }, [role])
+  }, [role, isAdmin, isBranchManager])
 
-  if (role !== 'Admin') {
+  if (!isAdmin && !isBranchManager) {
     return <Navigate to="/map" replace />
   }
 
@@ -1235,7 +2123,10 @@ function QrLabelPage() {
       setFormError('Enter a valid shipping price (0 or greater).')
       return
     }
-    if (!originBranchId || !destinationBranchId) {
+    const mgrBid = Number(localStorage.getItem('transport_branch_id'))
+    const originToSend =
+      isBranchManager && Number.isFinite(mgrBid) && mgrBid > 0 ? mgrBid : originBranchId
+    if (!originToSend || !destinationBranchId) {
       setFormError('Select origin and destination branches.')
       return
     }
@@ -1250,7 +2141,7 @@ function QrLabelPage() {
         receiverName: receiverName.trim(),
         receiverPhone: receiverPhone.trim(),
         receiverAddress: receiverAddress.trim(),
-        originBranchId,
+        originBranchId: originToSend,
         destinationBranchId,
         shippingPrice: price,
       }),
@@ -1276,8 +2167,9 @@ function QrLabelPage() {
     <div>
       <h2 className="mb-4 text-xl font-semibold text-white">Product entry &amp; shipping QR</h2>
       <p className="mb-6 text-sm text-slate-400">
-        Enter parcel, sender, receiver, branches, and shipping price. After creation you will be taken
-        to the product list where you can print the label or manage the shipment.
+        {isBranchManager
+          ? 'Shipments are created with your branch as origin. Choose any destination hub, then print the label from the product list.'
+          : 'Enter parcel, sender, receiver, branches, and shipping price. After creation you will be taken to the product list where you can print the label or manage the shipment.'}
       </p>
 
       <form
@@ -1353,10 +2245,11 @@ function QrLabelPage() {
         <div>
           <label className="text-sm text-slate-400">Origin branch</label>
           <select
-            className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-white"
+            className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-white disabled:opacity-70"
             value={originBranchId || ''}
             onChange={(e) => setOriginBranchId(Number(e.target.value))}
             required
+            disabled={isBranchManager}
           >
             {branches.length === 0 ? (
               <option value="">No branches — add branches first</option>
@@ -1405,13 +2298,15 @@ function QrLabelPage() {
             >
               {submitting ? 'Creating…' : 'Create product'}
             </button>
-            <button
-              type="button"
-              onClick={() => navigate('/branches')}
-              className="rounded-lg border border-slate-600 px-4 py-2 text-slate-300 hover:bg-slate-800"
-            >
-              Manage branches
-            </button>
+            {(isAdmin || isBranchManager) && (
+              <button
+                type="button"
+                onClick={() => navigate('/branches')}
+                className="rounded-lg border border-slate-600 px-4 py-2 text-slate-300 hover:bg-slate-800"
+              >
+                {isAdmin ? 'Manage branches' : 'View branches'}
+              </button>
+            )}
             <button
               type="button"
               onClick={() => navigate('/products')}
@@ -1438,9 +2333,159 @@ function QrLabelPage() {
   )
 }
 
+type CollectionRow = {
+  branchId: number
+  branchName: string
+  totalCollection: number
+}
+
+function ReportsPage() {
+  const role = localStorage.getItem('transport_role')
+  const isAdmin = role === 'Admin'
+  const isBranchManager = role === 'BranchManager'
+  const [rows, setRows] = useState<CollectionRow[]>([])
+  const [fromDate, setFromDate] = useState('')
+  const [toDate, setToDate] = useState('')
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+
+  const openNativeDatePicker = (el: HTMLInputElement) => {
+    const pickerInput = el as HTMLInputElement & { showPicker?: () => void }
+    if (typeof pickerInput.showPicker === 'function') pickerInput.showPicker()
+  }
+
+  const load = useCallback(async () => {
+    setLoading(true)
+    setError(null)
+    const params = new URLSearchParams()
+    if (fromDate) params.set('fromDate', fromDate)
+    if (toDate) params.set('toDate', toDate)
+    const query = params.toString()
+    const res = await apiFetch(`/api/reports/branch-collections${query ? `?${query}` : ''}`)
+    if (!res.ok) {
+      const j = await res.json().catch(() => ({}))
+      setError((j as { error?: string }).error ?? 'Could not load report.')
+      setRows([])
+    } else {
+      setRows(await res.json())
+    }
+    setLoading(false)
+  }, [fromDate, toDate])
+
+  useEffect(() => {
+    if (!isAdmin && !isBranchManager) return
+    void load()
+  }, [load, isAdmin, isBranchManager])
+
+  if (!isAdmin && !isBranchManager) return <Navigate to="/map" replace />
+
+  return (
+    <div>
+      <h2 className="mb-2 text-xl font-semibold text-white">Delivered collection by branch</h2>
+      <p className="mb-6 text-sm text-slate-400">
+        Sum of shipping price for parcels in Delivered status, attributed to each destination branch.
+        {isBranchManager && ' Your view is limited to your branch.'}
+      </p>
+      <form
+        onSubmit={(e) => {
+          e.preventDefault()
+          void load()
+        }}
+        className="mb-6 grid gap-3 rounded-xl border border-slate-800 bg-slate-900/40 p-4 md:grid-cols-[1fr_1fr_auto_auto]"
+      >
+        <div>
+          <label className="text-sm text-slate-400">From date</label>
+          <input
+            type="date"
+            value={fromDate}
+            onChange={(e) => setFromDate(e.target.value)}
+            onClick={(e) => openNativeDatePicker(e.currentTarget)}
+            onFocus={(e) => openNativeDatePicker(e.currentTarget)}
+            className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-white"
+          />
+        </div>
+        <div>
+          <label className="text-sm text-slate-400">To date</label>
+          <input
+            type="date"
+            value={toDate}
+            onChange={(e) => setToDate(e.target.value)}
+            onClick={(e) => openNativeDatePicker(e.currentTarget)}
+            onFocus={(e) => openNativeDatePicker(e.currentTarget)}
+            className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-white"
+          />
+        </div>
+        <button
+          type="submit"
+          className="self-end rounded-lg bg-violet-600 px-4 py-2 text-white hover:bg-violet-500"
+        >
+          Apply
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            setFromDate('')
+            setToDate('')
+            void (async () => {
+              setLoading(true)
+              setError(null)
+              const res = await apiFetch('/api/reports/branch-collections')
+              if (!res.ok) {
+                const j = await res.json().catch(() => ({}))
+                setError((j as { error?: string }).error ?? 'Could not load report.')
+                setRows([])
+              } else {
+                setRows(await res.json())
+              }
+              setLoading(false)
+            })()
+          }}
+          className="self-end rounded-lg border border-slate-600 px-4 py-2 text-slate-300 hover:bg-slate-800"
+        >
+          Clear
+        </button>
+      </form>
+      {error && (
+        <p className="mb-4 rounded-lg border border-red-900/50 bg-red-950/30 px-3 py-2 text-sm text-red-400">
+          {error}
+        </p>
+      )}
+      {loading && <p className="mb-4 text-slate-400">Loading…</p>}
+      <div className="overflow-hidden rounded-xl border border-slate-800">
+        <table className="w-full text-left text-sm">
+          <thead className="bg-slate-900 text-slate-400">
+            <tr>
+              <th className="px-4 py-3">Branch</th>
+              <th className="px-4 py-3 text-right">Total collection</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r) => (
+              <tr key={r.branchId} className="border-t border-slate-800">
+                <td className="px-4 py-3 text-slate-200">{r.branchName}</td>
+                <td className="px-4 py-3 text-right font-mono text-slate-100">
+                  {Number(r.totalCollection).toFixed(2)}
+                </td>
+              </tr>
+            ))}
+            {rows.length === 0 && (
+              <tr>
+                <td className="px-4 py-8 text-center text-slate-500" colSpan={2}>
+                  No delivered shipments yet for this scope.
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}
+
 function HomePage() {
   const role = localStorage.getItem('transport_role')
   if (role === 'Admin') return <ApprovalsPage />
+  if (role === 'BranchManager') return <Navigate to="/reports" replace />
   return <Navigate to="/map" replace />
 }
 
@@ -1452,7 +2497,10 @@ function DashboardRoutes() {
       <Routes>
         <Route path="/" element={<HomePage />} />
         <Route path="/map" element={<LiveMapPage />} />
+        <Route path="/reports" element={<ReportsPage />} />
         <Route path="/branches" element={<BranchesPage />} />
+        <Route path="/branch-managers" element={<BranchManagersPage />} />
+        <Route path="/staff" element={<StaffPage />} />
         <Route path="/products" element={<ProductsPage />} />
         <Route path="/qr" element={<QrLabelPage />} />
       </Routes>
