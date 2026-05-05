@@ -15,11 +15,11 @@ Modular logistics platform with:
 
 ```mermaid
 flowchart LR
-    A[Web Admin (React/Vite)] -->|REST + JWT| B[Transport.Api]
-    M[Mobile App (Expo)] -->|REST + JWT| B
-    A -->|SignalR /hubs/transport| B
-    M -->|SignalR /hubs/transport| B
-    B -->|EF Core| D[(PostgreSQL)]
+    A[Web Admin] -->|"REST + JWT"| B[Transport API]
+    M[Mobile App] -->|"REST + JWT"| B
+    A -->|"SignalR hub"| B
+    M -->|"SignalR hub"| B
+    B -->|"EF Core"| D[(PostgreSQL)]
 ```
 
 ### Backend design (layered)
