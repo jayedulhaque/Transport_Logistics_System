@@ -125,7 +125,7 @@ export default function App() {
       <Text style={styles.sub}>API: {apiBase()}</Text>
 
       {screen === 'home' && (
-        <View style={styles.section}>
+        <View style={[styles.section, styles.centerBlock]}>
           <AppButton title="Driver: Register" onPress={() => setScreen('driverRegister')} />
           <View style={styles.gap} />
           <AppButton title="Driver: Login" onPress={() => setScreen('driverLogin')} />
@@ -720,6 +720,7 @@ const styles = StyleSheet.create({
   title: { fontSize: 24, fontWeight: '700', color: '#f8fafc', marginBottom: 4 },
   sub: { fontSize: 12, color: '#94a3b8', marginBottom: 16 },
   section: { gap: 8 },
+  centerBlock: { flex: 1, justifyContent: 'center' },
   form: {
     gap: 8,
     paddingBottom: 32,
