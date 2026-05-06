@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Alert,
-  Button,
   FlatList,
+  Pressable,
   ScrollView,
   StyleSheet,
   Text,
@@ -45,6 +45,33 @@ type BranchOption = {
   branchName: string;
   code: string;
 };
+
+function AppButton({
+  title,
+  onPress,
+  variant = 'primary',
+  compact = false,
+}: {
+  title: string;
+  onPress: () => void;
+  variant?: 'primary' | 'secondary' | 'danger';
+  compact?: boolean;
+}) {
+  return (
+    <Pressable
+      onPress={onPress}
+      style={({ pressed }) => [
+        styles.btnBase,
+        variant === 'secondary' && styles.btnSecondary,
+        variant === 'danger' && styles.btnDanger,
+        compact && styles.btnCompact,
+        pressed && styles.btnPressed,
+      ]}
+    >
+      <Text style={[styles.btnText, variant !== 'primary' && styles.btnTextAlt]}>{title}</Text>
+    </Pressable>
+  );
+}
 
 export default function App() {
   const [screen, setScreen] = useState<Screen>('home');
@@ -99,11 +126,11 @@ export default function App() {
 
       {screen === 'home' && (
         <View style={styles.section}>
-          <Button title="Driver: register" onPress={() => setScreen('driverRegister')} />
+          <AppButton title="Driver: Register" onPress={() => setScreen('driverRegister')} />
           <View style={styles.gap} />
-          <Button title="Driver: login" onPress={() => setScreen('driverLogin')} />
+          <AppButton title="Driver: Login" onPress={() => setScreen('driverLogin')} />
           <View style={styles.gap} />
-          <Button title="Staff: login" onPress={() => setScreen('staffLogin')} />
+          <AppButton title="Staff: Login" variant="secondary" onPress={() => setScreen('staffLogin')} />
         </View>
       )}
 
@@ -274,9 +301,9 @@ function DriverRegister({ onDone, onBack }: { onDone: () => void; onBack: () => 
           {branches.length === 0 && <Text style={styles.sub}>No branches found.</Text>}
         </View>
       )}
-      <Button title="Submit registration" onPress={() => void submit()} />
+      <AppButton title="Submit registration" onPress={() => void submit()} />
       <View style={styles.gap} />
-      <Button title="Back" onPress={onBack} />
+      <AppButton title="Back" variant="secondary" onPress={onBack} />
     </ScrollView>
   );
 }
@@ -325,9 +352,9 @@ function DriverLogin({
         value={password}
         onChangeText={setPassword}
       />
-      <Button title="Login" onPress={() => void submit()} />
+      <AppButton title="Login" onPress={() => void submit()} />
       <View style={styles.gap} />
-      <Button title="Back" onPress={onBack} />
+      <AppButton title="Back" variant="secondary" onPress={onBack} />
     </View>
   );
 }
@@ -455,9 +482,9 @@ function StaffLogin({
         value={password}
         onChangeText={setPassword}
       />
-      <Button title="Login" onPress={() => void submit()} />
+      <AppButton title="Login" onPress={() => void submit()} />
       <View style={styles.gap} />
-      <Button title="Back" onPress={onBack} />
+      <AppButton title="Back" variant="secondary" onPress={onBack} />
     </View>
   );
 }
@@ -497,16 +524,20 @@ function StaffPickDriver({
             <Text style={styles.rowText}>
               {item.fullName} · {item.vehicleNumber}
             </Text>
-            <Button title="Select" onPress={() => onPicked(item.driverProfileId)} />
+            <AppButton
+              title="Select"
+              compact
+              onPress={() => onPicked(item.driverProfileId)}
+            />
           </View>
         )}
         ListEmptyComponent={<Text style={styles.sub}>No drivers online. Drivers must mark presence.</Text>}
       />
-      <Button title="Refresh" onPress={() => void load()} />
+      <AppButton title="Refresh list" variant="secondary" onPress={() => void load()} />
       <View style={styles.gap} />
-      <Button title="Unload at destination branch" onPress={onUnload} />
+      <AppButton title="Unload at destination branch" onPress={onUnload} />
       <View style={styles.gap} />
-      <Button title="Back" onPress={onBack} />
+      <AppButton title="Back" variant="secondary" onPress={onBack} />
     </View>
   );
 }
@@ -665,31 +696,40 @@ function StaffScanner({
           </Text>
         )}
       />
-      <Button
+      <AppButton
         title={mode === 'unload' ? 'Confirm unload' : 'Confirm load'}
         onPress={() => void confirmLoad()}
       />
       <View style={styles.gap} />
-      <Button
+      <AppButton
         title={scanning ? 'Pause scan' : 'Resume scan'}
         onPress={() => {
           setScanError(null);
           setScanning((v) => !v);
         }}
+        variant="secondary"
       />
       <View style={styles.gap} />
-      <Button title="Back" onPress={onBack} />
+      <AppButton title="Back" variant="secondary" onPress={onBack} />
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  root: { flex: 1, padding: 16, paddingTop: 48, backgroundColor: '#0f172a' },
-  title: { fontSize: 22, fontWeight: '600', color: '#fff', marginBottom: 4 },
+  root: { flex: 1, padding: 16, paddingTop: 48, backgroundColor: '#020617' },
+  title: { fontSize: 24, fontWeight: '700', color: '#f8fafc', marginBottom: 4 },
   sub: { fontSize: 12, color: '#94a3b8', marginBottom: 16 },
   section: { gap: 8 },
-  form: { gap: 8, paddingBottom: 32 },
-  label: { color: '#cbd5e1', marginTop: 8 },
+  form: {
+    gap: 8,
+    paddingBottom: 32,
+    borderWidth: 1,
+    borderColor: '#1e293b',
+    borderRadius: 14,
+    padding: 14,
+    backgroundColor: '#0f172a',
+  },
+  label: { color: '#cbd5e1', marginTop: 8, fontWeight: '600' },
   input: {
     borderWidth: 1,
     borderColor: '#334155',
@@ -722,5 +762,40 @@ const styles = StyleSheet.create({
     borderColor: '#6366f1',
     backgroundColor: '#312e81',
     color: '#fff',
+  },
+  btnBase: {
+    minHeight: 44,
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#6366f1',
+    borderWidth: 1,
+    borderColor: '#818cf8',
+  },
+  btnSecondary: {
+    backgroundColor: '#1e293b',
+    borderColor: '#334155',
+  },
+  btnDanger: {
+    backgroundColor: '#b91c1c',
+    borderColor: '#ef4444',
+  },
+  btnCompact: {
+    minHeight: 34,
+    paddingHorizontal: 10,
+    borderRadius: 10,
+  },
+  btnPressed: {
+    opacity: 0.85,
+    transform: [{ scale: 0.98 }],
+  },
+  btnText: {
+    color: '#ffffff',
+    fontWeight: '700',
+    fontSize: 14,
+  },
+  btnTextAlt: {
+    color: '#e2e8f0',
   },
 });
