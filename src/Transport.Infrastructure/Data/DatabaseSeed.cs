@@ -6,6 +6,8 @@ namespace Transport.Infrastructure.Data;
 
 public static class DatabaseSeed
 {
+    private const string GoogleMapsApiKey = "AIzaSyAHRBQ17twJFc1pKj5KtoZxQWetfaak1HM";
+
     public static async Task SeedAsync(TransportDbContext db, CancellationToken ct = default)
     {
         Branch? branch;
@@ -51,6 +53,12 @@ public static class DatabaseSeed
             branchId: branch.Id,
             password: "Manager123!",
             ct);
+
+        await EnsureConfigurationAsync(
+            db,
+            configKey: "GoogleMapsApiKey",
+            configValue: GoogleMapsApiKey,
+            ct);
     }
 
     private static async Task EnsureUserAsync(
@@ -74,6 +82,26 @@ public static class DatabaseSeed
             IsActive = true,
             BranchId = branchId,
             PasswordHash = BCrypt.Net.BCrypt.HashPassword(password)
+        });
+        await db.SaveChangesAsync(ct);
+    }
+
+    private static async Task EnsureConfigurationAsync(
+        TransportDbContext db,
+        string configKey,
+        string configValue,
+        CancellationToken ct)
+    {
+        var existing = await db.AppConfigurations
+            .FirstOrDefaultAsync(c => c.ConfigKey == configKey, ct);
+        if (existing is not null)
+            return;
+
+        db.AppConfigurations.Add(new AppConfiguration
+        {
+            ConfigKey = configKey,
+            ConfigValue = configValue,
+            UpdatedAt = DateTime.UtcNow
         });
         await db.SaveChangesAsync(ct);
     }

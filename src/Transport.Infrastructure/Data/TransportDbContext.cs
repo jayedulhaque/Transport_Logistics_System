@@ -6,6 +6,7 @@ namespace Transport.Infrastructure.Data;
 
 public class TransportDbContext(DbContextOptions<TransportDbContext> options) : DbContext(options)
 {
+    public DbSet<AppConfiguration> AppConfigurations => Set<AppConfiguration>();
     public DbSet<Branch> Branches => Set<Branch>();
     public DbSet<User> Users => Set<User>();
     public DbSet<DriverProfile> DriverProfiles => Set<DriverProfile>();
@@ -38,6 +39,12 @@ public class TransportDbContext(DbContextOptions<TransportDbContext> options) : 
         modelBuilder.Entity<Branch>(entity =>
         {
             entity.HasIndex(b => b.Code).IsUnique();
+        });
+
+        modelBuilder.Entity<AppConfiguration>(entity =>
+        {
+            entity.HasIndex(c => c.ConfigKey).IsUnique();
+            entity.Property(c => c.ConfigKey).HasMaxLength(200);
         });
 
         modelBuilder.Entity<Product>(entity =>

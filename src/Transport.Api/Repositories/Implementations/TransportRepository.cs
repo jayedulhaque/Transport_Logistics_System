@@ -13,6 +13,7 @@ public class TransportRepository(TransportDbContext db) : ITransportRepository
     public IQueryable<Product> Products => db.Products;
     public IQueryable<Trip> Trips => db.Trips;
     public IQueryable<TripProduct> TripProducts => db.TripProducts;
+    public IQueryable<AppConfiguration> AppConfigurations => db.AppConfigurations;
 
     public Task AddAsync<TEntity>(TEntity entity, CancellationToken ct = default) where TEntity : class =>
         db.Set<TEntity>().AddAsync(entity, ct).AsTask();

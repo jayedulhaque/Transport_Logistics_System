@@ -27,6 +27,7 @@ public interface ITransportService
     Task<IResult> UpdateDriverPresenceAsync(PresenceRequest body, ClaimsPrincipal principal, CancellationToken ct = default);
     Task<IResult> UpdateDriverLocationAsync(LocationRequest body, ClaimsPrincipal principal, IHubContext<TransportHub> hub, CancellationToken ct = default);
     Task<IResult> GetDriverLocationsAsync(ClaimsPrincipal principal, CancellationToken ct = default);
+    Task<IResult> GetMapSettingsAsync(ClaimsPrincipal principal, CancellationToken ct = default);
 
     Task<IResult> CreateStaffAsync(CreateStaffRequest body, ClaimsPrincipal principal, CancellationToken ct = default);
     Task<IResult> GetStaffAsync(ClaimsPrincipal principal, CancellationToken ct = default);
@@ -49,4 +50,7 @@ public interface ITransportService
 
     Task<IResult> LoadTripAsync(TripLoadRequest body, ClaimsPrincipal principal, CancellationToken ct = default);
     Task<IResult> UnloadTripAsync(TripUnloadRequest body, ClaimsPrincipal principal, CancellationToken ct = default);
+
+    Task<IResult> GetAppConfigurationAsync(string key, ClaimsPrincipal principal, CancellationToken ct = default);
+    Task<IResult> UpsertAppConfigurationAsync(string key, UpdateAppConfigurationRequest body, ClaimsPrincipal principal, CancellationToken ct = default);
 }

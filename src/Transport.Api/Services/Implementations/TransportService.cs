@@ -337,6 +337,17 @@ public class TransportService(ITransportRepository repo, TokenService tokens) : 
         return Results.Forbid();
     }
 
+    public async Task<IResult> GetMapSettingsAsync(ClaimsPrincipal principal, CancellationToken ct = default)
+    {
+        if (!principal.Identity?.IsAuthenticated ?? true)
+            return Results.Unauthorized();
+
+        var config = await repo.AppConfigurations.AsNoTracking()
+            .FirstOrDefaultAsync(c => c.ConfigKey == "GoogleMapsApiKey", ct);
+
+        return Results.Ok(new MapSettingsDto(config?.ConfigValue ?? string.Empty));
+    }
+
     public async Task<IResult> CreateStaffAsync(CreateStaffRequest body, ClaimsPrincipal principal, CancellationToken ct = default)
     {
         if (!principal.IsInRole(nameof(UserRole.Admin)) && !principal.IsInRole(nameof(UserRole.BranchManager))) return Results.Forbid();
@@ -768,6 +779,48 @@ public class TransportService(ITransportRepository repo, TokenService tokens) : 
         }
         await repo.SaveChangesAsync(ct);
         return Results.Ok(new { unloadedCount = products.Count });
+    }
+
+    public async Task<IResult> GetAppConfigurationAsync(string key, ClaimsPrincipal principal, CancellationToken ct = default)
+    {
+        if (!principal.IsInRole(nameof(UserRole.Admin))) return Results.Forbid();
+        if (string.IsNullOrWhiteSpace(key)) return Results.BadRequest(new { error = "Configuration key is required." });
+
+        var config = await repo.AppConfigurations.AsNoTracking()
+            .FirstOrDefaultAsync(c => c.ConfigKey == key, ct);
+        if (config is null) return Results.NotFound(new { error = "Configuration not found." });
+
+        return Results.Ok(new AppConfigurationDto(config.ConfigKey, config.ConfigValue, config.UpdatedAt));
+    }
+
+    public async Task<IResult> UpsertAppConfigurationAsync(string key, UpdateAppConfigurationRequest body, ClaimsPrincipal principal, CancellationToken ct = default)
+    {
+        if (!principal.IsInRole(nameof(UserRole.Admin))) return Results.Forbid();
+        if (string.IsNullOrWhiteSpace(key)) return Results.BadRequest(new { error = "Configuration key is required." });
+
+        var value = body.ConfigValue?.Trim() ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(value))
+            return Results.BadRequest(new { error = "Configuration value is required." });
+
+        var config = await repo.AppConfigurations.FirstOrDefaultAsync(c => c.ConfigKey == key, ct);
+        if (config is null)
+        {
+            config = new AppConfiguration
+            {
+                ConfigKey = key,
+                ConfigValue = value,
+                UpdatedAt = DateTime.UtcNow
+            };
+            await repo.AddAsync(config, ct);
+        }
+        else
+        {
+            config.ConfigValue = value;
+            config.UpdatedAt = DateTime.UtcNow;
+        }
+
+        await repo.SaveChangesAsync(ct);
+        return Results.Ok(new AppConfigurationDto(config.ConfigKey, config.ConfigValue, config.UpdatedAt));
     }
 
     private static bool ProductTouchesBranch(Product p, int bid) =>

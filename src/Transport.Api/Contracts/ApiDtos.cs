@@ -125,3 +125,9 @@ public record DriverStatusResponse(bool IsApproved, int? DriverProfileId);
 
 /// <summary>Delivered shipment revenue attributed to the destination branch.</summary>
 public record BranchCollectionRowDto(int BranchId, string BranchName, decimal TotalCollection);
+
+public record AppConfigurationDto(string ConfigKey, string ConfigValue, DateTime UpdatedAt);
+
+public record UpdateAppConfigurationRequest(string ConfigValue);
+
+public record MapSettingsDto(string GoogleMapsApiKey);

@@ -24,6 +24,7 @@ import {
   Package,
   Pencil,
   Printer,
+  Settings,
   Trash2,
   UserCog,
   Users,
@@ -210,6 +211,11 @@ function Layout({ children }: { children: React.ReactNode }) {
           {role === 'Admin' && (
             <Link className="flex items-center gap-1 hover:text-violet-400" to="/">
               <Users size={16} /> Approvals
+            </Link>
+          )}
+          {role === 'Admin' && (
+            <Link className="flex items-center gap-1 hover:text-violet-400" to="/configuration">
+              <Settings size={16} /> Configuration
             </Link>
           )}
           {role === 'Admin' && (
@@ -1366,10 +1372,12 @@ function OsmLiveMap({
 }
 
 function LiveMapPage() {
-  const apiKey = (import.meta.env.VITE_GOOGLE_MAPS_API_KEY as string | undefined)?.trim()
+  const envApiKey = (import.meta.env.VITE_GOOGLE_MAPS_API_KEY as string | undefined)?.trim()
+  const [dbApiKey, setDbApiKey] = useState<string>('')
   const [drivers, setDrivers] = useState<DriverOnMap[]>([])
   const [selectedId, setSelectedId] = useState<number | null>(null)
   const [connection, setConnection] = useState<HubConnection | null>(null)
+  const apiKey = dbApiKey || envApiKey
 
   const mergeLocation = (driverProfileId: number, lat: number, lng: number) => {
     setDrivers((prev) => {
@@ -1387,6 +1395,15 @@ function LiveMapPage() {
       return [...rest, next].sort((a, b) => a.fullName.localeCompare(b.fullName))
     })
   }
+
+  useEffect(() => {
+    void (async () => {
+      const res = await apiFetch('/api/tracking/map-settings')
+      if (!res.ok) return
+      const payload = (await res.json()) as { googleMapsApiKey?: string }
+      setDbApiKey((payload.googleMapsApiKey ?? '').trim())
+    })()
+  }, [])
 
   useEffect(() => {
     void (async () => {
@@ -2482,6 +2499,98 @@ function ReportsPage() {
   )
 }
 
+function ConfigurationPage() {
+  const role = localStorage.getItem('transport_role')
+  const [apiKey, setApiKey] = useState('')
+  const [updatedAt, setUpdatedAt] = useState<string | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [success, setSuccess] = useState<string | null>(null)
+
+  const load = useCallback(async () => {
+    setLoading(true)
+    setError(null)
+    const res = await apiFetch('/api/configurations/GoogleMapsApiKey')
+    if (!res.ok) {
+      const j = await res.json().catch(() => ({}))
+      setError((j as { error?: string }).error ?? 'Could not load configuration.')
+      setLoading(false)
+      return
+    }
+    const row = (await res.json()) as {
+      configKey: string
+      configValue: string
+      updatedAt: string
+    }
+    setApiKey(row.configValue ?? '')
+    setUpdatedAt(row.updatedAt ?? null)
+    setLoading(false)
+  }, [])
+
+  useEffect(() => {
+    if (role !== 'Admin') return
+    void load()
+  }, [role, load])
+
+  if (role !== 'Admin') return <Navigate to="/map" replace />
+  if (loading) return <p className="text-slate-400">Loading…</p>
+
+  const save = async (e: React.FormEvent) => {
+    e.preventDefault()
+    setSaving(true)
+    setError(null)
+    setSuccess(null)
+    const res = await apiFetch('/api/configurations/GoogleMapsApiKey', {
+      method: 'PUT',
+      body: JSON.stringify({ configValue: apiKey }),
+    })
+    setSaving(false)
+    if (!res.ok) {
+      const j = await res.json().catch(() => ({}))
+      setError((j as { error?: string }).error ?? 'Could not save configuration.')
+      return
+    }
+    const row = (await res.json()) as { updatedAt: string }
+    setUpdatedAt(row.updatedAt ?? null)
+    setSuccess('Configuration saved.')
+  }
+
+  return (
+    <div>
+      <h2 className="mb-4 text-xl font-semibold text-white">System configuration</h2>
+      <p className="mb-6 text-sm text-slate-400">
+        Admin-only settings stored in the database.
+      </p>
+      <form
+        onSubmit={save}
+        className="rounded-xl border border-slate-800 bg-slate-900/40 p-6"
+      >
+        <label className="text-sm text-slate-300">Google Maps API key</label>
+        <input
+          className="mt-2 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 font-mono text-white"
+          value={apiKey}
+          onChange={(e) => setApiKey(e.target.value)}
+          placeholder="AIza..."
+          required
+        />
+        <p className="mt-2 text-xs text-slate-500">
+          Last updated: {updatedAt ? new Date(updatedAt).toLocaleString() : 'N/A'}
+        </p>
+        {error && <p className="mt-3 text-sm text-red-400">{error}</p>}
+        {success && <p className="mt-3 text-sm text-emerald-400">{success}</p>}
+        <button
+          type="submit"
+          disabled={saving}
+          className="mt-4 rounded-lg bg-violet-600 px-4 py-2 text-white hover:bg-violet-500 disabled:opacity-50"
+        >
+          {saving ? 'Saving…' : 'Save'}
+        </button>
+      </form>
+    </div>
+  )
+}
+
 function HomePage() {
   const role = localStorage.getItem('transport_role')
   if (role === 'Admin') return <ApprovalsPage />
@@ -2503,6 +2612,7 @@ function DashboardRoutes() {
         <Route path="/staff" element={<StaffPage />} />
         <Route path="/products" element={<ProductsPage />} />
         <Route path="/qr" element={<QrLabelPage />} />
+        <Route path="/configuration" element={<ConfigurationPage />} />
       </Routes>
     </Layout>
   )

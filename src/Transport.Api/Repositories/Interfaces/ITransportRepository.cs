@@ -11,6 +11,7 @@ public interface ITransportRepository
     IQueryable<Product> Products { get; }
     IQueryable<Trip> Trips { get; }
     IQueryable<TripProduct> TripProducts { get; }
+    IQueryable<AppConfiguration> AppConfigurations { get; }
 
     Task AddAsync<TEntity>(TEntity entity, CancellationToken ct = default) where TEntity : class;
     void Remove<TEntity>(TEntity entity) where TEntity : class;
