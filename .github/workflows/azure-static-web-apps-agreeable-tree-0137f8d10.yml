@@ -32,6 +32,9 @@ jobs:
           api_location: "" # Api source code path - optional
           output_location: "dist" # Built app content directory - optional
           ###### End of Repository/Build Configurations ######
+        env: # <--- ADD IT HERE (Aligned with 'with')
+          VITE_API_URL: ${{ secrets.VITE_API_URL }}
+          VITE_OTHER_VARIABLE: ${{ secrets.VITE_OTHER_VARIABLE }}
 
   close_pull_request_job:
     if: github.event_name == 'pull_request' && github.event.action == 'closed'
