@@ -51,21 +51,25 @@ function AppButton({
   onPress,
   variant = 'primary',
   compact = false,
+  disabled = false,
 }: {
   title: string;
   onPress: () => void;
   variant?: 'primary' | 'secondary' | 'danger';
   compact?: boolean;
+  disabled?: boolean;
 }) {
   return (
     <Pressable
-      onPress={onPress}
+      onPress={disabled ? undefined : onPress}
+      disabled={disabled}
       style={({ pressed }) => [
         styles.btnBase,
         variant === 'secondary' && styles.btnSecondary,
         variant === 'danger' && styles.btnDanger,
         compact && styles.btnCompact,
-        pressed && styles.btnPressed,
+        disabled && { opacity: 0.45 },
+        pressed && !disabled && styles.btnPressed,
       ]}
     >
       <Text style={[styles.btnText, variant !== 'primary' && styles.btnTextAlt]}>{title}</Text>
@@ -80,6 +84,7 @@ export default function App() {
   const [staffToken, setStaffToken] = useState<string | null>(null);
   const [hub, setHub] = useState<HubConnection | null>(null);
   const [selectedDriverProfileId, setSelectedDriverProfileId] = useState<number | null>(null);
+  const [selectedTripId, setSelectedTripId] = useState<string | null>(null);
   const hubRef = useRef<HubConnection | null>(null);
 
   useEffect(() => {
@@ -182,12 +187,14 @@ export default function App() {
       {screen === 'staffDrivers' && staffToken && (
         <StaffPickDriver
           token={staffToken}
-          onPicked={(id) => {
-            setSelectedDriverProfileId(id);
+          onPicked={(driverProfileId, tripId) => {
+            setSelectedDriverProfileId(driverProfileId);
+            setSelectedTripId(tripId);
             setScreen('staffScan');
           }}
           onUnload={() => {
             setSelectedDriverProfileId(null);
+            setSelectedTripId(null);
             setScreen('staffUnload');
           }}
           onBack={() => setScreen('home')}
@@ -198,9 +205,12 @@ export default function App() {
         <StaffScanner
           token={staffToken}
           driverProfileId={selectedDriverProfileId}
+          tripId={selectedTripId}
           mode="load"
-          title="Load parcels to selected driver"
-          onBack={() => setScreen('staffDrivers')}
+          title="Load parcels onto the selected trip"
+          onBack={() => {
+            setScreen('staffDrivers');
+          }}
         />
       )}
 
@@ -384,6 +394,14 @@ function DriverWait({
   );
 }
 
+type TripStatePayload = {
+  phase: string;
+  tripId: string | null;
+  destinationBranchesLabel: string | null;
+  driverPaymentAmount: number | null;
+  productCount: number;
+};
+
 function DriverTrack({
   token,
   driverProfileId,
@@ -393,18 +411,63 @@ function DriverTrack({
   driverProfileId: number;
   hub: HubConnection | null;
 }) {
-  const [status, setStatus] = useState('starting');
+  const [phase, setPhase] = useState<'loading' | 'idle' | 'awaiting' | 'tracking'>('loading');
+  const [trip, setTrip] = useState<TripStatePayload | null>(null);
+  const [gpsStatus, setGpsStatus] = useState('');
+
+  const refreshState = useCallback(async () => {
+    const res = await apiFetch('/api/drivers/me/trip-state', {}, token);
+    if (!res.ok) {
+      setPhase('idle');
+      setTrip(null);
+      return;
+    }
+    const d = (await res.json()) as TripStatePayload;
+    setTrip(d);
+    if (d.phase === 'None') {
+      setPhase('idle');
+    } else if (d.phase === 'AwaitingDriverStart') {
+      setPhase('awaiting');
+    } else if (d.phase === 'InTransit') {
+      setPhase('tracking');
+    } else {
+      setPhase('idle');
+    }
+  }, [token]);
 
   useEffect(() => {
+    void refreshState();
+  }, [refreshState]);
+
+  useEffect(() => {
+    if (phase !== 'awaiting') return;
+    const id = setInterval(() => void refreshState(), 12000);
+    return () => clearInterval(id);
+  }, [phase, refreshState]);
+
+  const startTrip = async () => {
+    if (!trip?.tripId) return;
+    const res = await apiFetch(`/api/drivers/me/trips/${trip.tripId}/start`, { method: 'POST' }, token);
+    if (!res.ok) {
+      const t = await res.text();
+      Alert.alert('Cannot start trip', t || 'Request failed');
+      return;
+    }
+    await refreshState();
+  };
+
+  useEffect(() => {
+    if (phase !== 'tracking') return;
     let timer: ReturnType<typeof setInterval> | undefined;
+    let poll: ReturnType<typeof setInterval> | undefined;
 
     const run = async () => {
       const perm = await Location.requestForegroundPermissionsAsync();
       if (perm.status !== 'granted') {
-        setStatus('location denied');
+        setGpsStatus('location denied');
         return;
       }
-      setStatus('tracking');
+      setGpsStatus('tracking');
 
       timer = setInterval(async () => {
         const loc = await Location.getCurrentPositionAsync({});
@@ -427,19 +490,78 @@ function DriverTrack({
       const first = await Location.getCurrentPositionAsync({});
       if (hub && hub.state === HubConnectionState.Connected) {
         await hub.invoke('ReportLocation', first.coords.latitude, first.coords.longitude);
+      } else {
+        await apiFetch(
+          '/api/drivers/me/location',
+          {
+            method: 'PATCH',
+            body: JSON.stringify({ latitude: first.coords.latitude, longitude: first.coords.longitude }),
+          },
+          token
+        );
       }
     };
 
     void run();
+    poll = setInterval(() => void refreshState(), 45000);
+
     return () => {
       if (timer) clearInterval(timer);
+      if (poll) clearInterval(poll);
     };
-  }, [token, driverProfileId, hub]);
+  }, [phase, token, hub, refreshState]);
+
+  if (phase === 'loading') {
+    return (
+      <View style={styles.section}>
+        <Text style={styles.waitText}>Loading trip…</Text>
+      </View>
+    );
+  }
+
+  if (phase === 'idle') {
+    return (
+      <View style={styles.section}>
+        <Text style={styles.waitText}>No active trip</Text>
+        <Text style={styles.sub}>
+          When your branch manager creates a trip for you, staff can load parcels at origin. After loading, pull to
+          refresh here — then start the trip to turn on GPS tracking.
+        </Text>
+        <AppButton title="Refresh" variant="secondary" onPress={() => void refreshState()} />
+      </View>
+    );
+  }
+
+  if (phase === 'awaiting' && trip) {
+    const canStart = trip.productCount > 0;
+    return (
+      <View style={styles.section}>
+        <Text style={styles.waitText}>Ready to depart</Text>
+        <Text style={styles.sub}>To {trip.destinationBranchesLabel ?? '—'}</Text>
+        <Text style={styles.sub}>
+          Parcels on trip: {trip.productCount} · Trip pay {Number(trip.driverPaymentAmount ?? 0).toFixed(2)}
+        </Text>
+        {!canStart && (
+          <Text style={styles.sub}>Wait for staff to scan at least one parcel before you start.</Text>
+        )}
+        <AppButton title="Start trip (GPS on)" disabled={!canStart} onPress={() => void startTrip()} />
+        <View style={styles.gap} />
+        <AppButton title="Refresh status" variant="secondary" onPress={() => void refreshState()} />
+        <Text style={[styles.sub, { marginTop: 12 }]}>Profile #{driverProfileId}</Text>
+      </View>
+    );
+  }
 
   return (
     <View style={styles.section}>
-      <Text style={styles.waitText}>Trip / GPS ({status})</Text>
-      <Text style={styles.sub}>Reporting location every 30s. Profile #{driverProfileId}</Text>
+      <Text style={styles.waitText}>Trip in progress · GPS ({gpsStatus || '…'})</Text>
+      <Text style={styles.sub}>
+        {trip?.destinationBranchesLabel
+          ? `Heading to ${trip.destinationBranchesLabel}`
+          : 'Reporting location every 30s.'}
+      </Text>
+      <Text style={styles.sub}>Profile #{driverProfileId}</Text>
+      <AppButton title="Refresh trip status" variant="secondary" onPress={() => void refreshState()} />
     </View>
   );
 }
@@ -496,13 +618,20 @@ function StaffPickDriver({
   onBack,
 }: {
   token: string;
-  onPicked: (driverProfileId: number) => void;
+  onPicked: (driverProfileId: number, tripId: string) => void;
   onUnload: () => void;
   onBack: () => void;
 }) {
-  const [rows, setRows] = useState<{ driverProfileId: number; fullName: string; vehicleNumber: string }[]>(
-    []
-  );
+  const [rows, setRows] = useState<
+    {
+      tripId: string;
+      driverProfileId: number;
+      fullName: string;
+      vehicleNumber: string;
+      destinationBranchesLabel: string;
+      driverPaymentAmount: number;
+    }[]
+  >([]);
 
   const load = useCallback(async () => {
     const res = await apiFetch('/api/staff/available-drivers', {}, token);
@@ -515,23 +644,31 @@ function StaffPickDriver({
 
   return (
     <View style={styles.section}>
-      <Text style={styles.label}>Online drivers at your branch</Text>
+      <Text style={styles.label}>Trips ready for loading (your branch)</Text>
       <FlatList
         data={rows}
-        keyExtractor={(item) => String(item.driverProfileId)}
+        keyExtractor={(item) => item.tripId}
         renderItem={({ item }) => (
           <View style={styles.row}>
             <Text style={styles.rowText}>
               {item.fullName} · {item.vehicleNumber}
+              {'\n'}
+              <Text style={styles.sub}>
+                To {item.destinationBranchesLabel} · trip pay {Number(item.driverPaymentAmount).toFixed(2)}
+              </Text>
             </Text>
             <AppButton
               title="Select"
               compact
-              onPress={() => onPicked(item.driverProfileId)}
+              onPress={() => onPicked(item.driverProfileId, item.tripId)}
             />
           </View>
         )}
-        ListEmptyComponent={<Text style={styles.sub}>No drivers online. Drivers must mark presence.</Text>}
+        ListEmptyComponent={
+          <Text style={styles.sub}>
+            No trips awaiting load. A branch manager must create a trip first (driver + destination(s) + payment).
+          </Text>
+        }
       />
       <AppButton title="Refresh list" variant="secondary" onPress={() => void load()} />
       <View style={styles.gap} />
@@ -545,12 +682,14 @@ function StaffPickDriver({
 function StaffScanner({
   token,
   driverProfileId,
+  tripId,
   mode,
   title,
   onBack,
 }: {
   token: string;
   driverProfileId: number | null;
+  tripId?: string | null;
   mode: 'load' | 'unload';
   title: string;
   onBack: () => void;
@@ -630,7 +769,11 @@ function StaffScanner({
     }
 
     if (driverProfileId == null) {
-      Alert.alert('Select a driver first');
+      Alert.alert('Select a trip first');
+      return;
+    }
+    if (!tripId) {
+      Alert.alert('Missing trip', 'Go back and select a trip that is ready for loading.');
       return;
     }
     if (scanned.length === 0) {
@@ -640,6 +783,7 @@ function StaffScanner({
     const res = await apiFetch('/api/trips/load', {
       method: 'POST',
       body: JSON.stringify({
+        tripId,
         driverProfileId,
         productIds: scanned.map((s) => s.id),
       }),

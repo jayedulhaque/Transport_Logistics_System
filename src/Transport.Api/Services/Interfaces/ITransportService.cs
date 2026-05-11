@@ -19,11 +19,20 @@ public interface ITransportService
 
     Task<IResult> GetBranchCollectionsAsync(string? fromDate, string? toDate, ClaimsPrincipal principal, CancellationToken ct = default);
 
+    Task<IResult> GetBookingsByDestinationAsync(
+        string? fromDate,
+        string? toDate,
+        int? originBranchId,
+        ClaimsPrincipal principal,
+        CancellationToken ct = default);
+
     Task<IResult> GetPendingDriversAsync(ClaimsPrincipal principal, CancellationToken ct = default);
     Task<IResult> GetApprovedDriversAsync(ClaimsPrincipal principal, CancellationToken ct = default);
     Task<IResult> UpdateDriverBranchAsync(int id, UpdateDriverBranchRequest body, ClaimsPrincipal principal, CancellationToken ct = default);
     Task<IResult> ApproveDriverAsync(int id, ClaimsPrincipal principal, IHubContext<TransportHub> hub, CancellationToken ct = default);
     Task<IResult> GetDriverStatusAsync(ClaimsPrincipal principal, CancellationToken ct = default);
+    Task<IResult> GetDriverTripStateAsync(ClaimsPrincipal principal, CancellationToken ct = default);
+    Task<IResult> StartDriverTripAsync(Guid tripId, ClaimsPrincipal principal, CancellationToken ct = default);
     Task<IResult> UpdateDriverPresenceAsync(PresenceRequest body, ClaimsPrincipal principal, CancellationToken ct = default);
     Task<IResult> UpdateDriverLocationAsync(LocationRequest body, ClaimsPrincipal principal, IHubContext<TransportHub> hub, CancellationToken ct = default);
     Task<IResult> GetDriverLocationsAsync(ClaimsPrincipal principal, CancellationToken ct = default);
@@ -40,6 +49,13 @@ public interface ITransportService
     Task<IResult> DeleteBranchManagerAsync(int id, ClaimsPrincipal principal, CancellationToken ct = default);
 
     Task<IResult> GetAvailableDriversAsync(ClaimsPrincipal principal, CancellationToken ct = default);
+
+    Task<IResult> CreateTripAsync(CreateTripRequest body, ClaimsPrincipal principal, CancellationToken ct = default);
+    Task<IResult> GetTripsAsync(ClaimsPrincipal principal, CancellationToken ct = default);
+    Task<IResult> UpdateTripAsync(Guid id, UpdateTripRequest body, ClaimsPrincipal principal, CancellationToken ct = default);
+
+    Task<IResult> GetDriverEarningsAsync(ClaimsPrincipal principal, CancellationToken ct = default);
+    Task<IResult> PayDriverEarningsAsync(int driverProfileId, PayDriverEarningsRequest body, ClaimsPrincipal principal, CancellationToken ct = default);
     Task<IResult> LookupProductAsync(string tracking, string? mode, ClaimsPrincipal principal, CancellationToken ct = default);
 
     Task<IResult> CreateProductAsync(CreateProductRequest body, ClaimsPrincipal principal, CancellationToken ct = default);

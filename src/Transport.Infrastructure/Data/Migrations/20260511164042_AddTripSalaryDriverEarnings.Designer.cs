@@ -2,6 +2,7 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 using Transport.Infrastructure.Data;
@@ -11,9 +12,11 @@ using Transport.Infrastructure.Data;
 namespace Transport.Infrastructure.Data.Migrations
 {
     [DbContext(typeof(TransportDbContext))]
-    partial class TransportDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260511164042_AddTripSalaryDriverEarnings")]
+    partial class AddTripSalaryDriverEarnings
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -215,6 +218,9 @@ namespace Transport.Infrastructure.Data.Migrations
                         .ValueGeneratedOnAdd()
                         .HasColumnType("uuid");
 
+                    b.Property<int>("DestinationBranchId")
+                        .HasColumnType("integer");
+
                     b.Property<decimal>("DriverPaymentAmount")
                         .HasPrecision(18, 2)
                         .HasColumnType("numeric(18,2)");
@@ -237,26 +243,13 @@ namespace Transport.Infrastructure.Data.Migrations
 
                     b.HasKey("Id");
 
+                    b.HasIndex("DestinationBranchId");
+
                     b.HasIndex("DriverProfileId");
 
                     b.HasIndex("OriginBranchId");
 
                     b.ToTable("Trips");
-                });
-
-            modelBuilder.Entity("Transport.Domain.Entities.TripDestination", b =>
-                {
-                    b.Property<Guid>("TripId")
-                        .HasColumnType("uuid");
-
-                    b.Property<int>("BranchId")
-                        .HasColumnType("integer");
-
-                    b.HasKey("TripId", "BranchId");
-
-                    b.HasIndex("BranchId");
-
-                    b.ToTable("TripDestinations");
                 });
 
             modelBuilder.Entity("Transport.Domain.Entities.TripProduct", b =>
@@ -352,6 +345,12 @@ namespace Transport.Infrastructure.Data.Migrations
 
             modelBuilder.Entity("Transport.Domain.Entities.Trip", b =>
                 {
+                    b.HasOne("Transport.Domain.Entities.Branch", "DestinationBranch")
+                        .WithMany("DestinationTrips")
+                        .HasForeignKey("DestinationBranchId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
                     b.HasOne("Transport.Domain.Entities.DriverProfile", "DriverProfile")
                         .WithMany("Trips")
                         .HasForeignKey("DriverProfileId")
@@ -364,28 +363,11 @@ namespace Transport.Infrastructure.Data.Migrations
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
 
+                    b.Navigation("DestinationBranch");
+
                     b.Navigation("DriverProfile");
 
                     b.Navigation("OriginBranch");
-                });
-
-            modelBuilder.Entity("Transport.Domain.Entities.TripDestination", b =>
-                {
-                    b.HasOne("Transport.Domain.Entities.Branch", "Branch")
-                        .WithMany("TripDestinations")
-                        .HasForeignKey("BranchId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
-
-                    b.HasOne("Transport.Domain.Entities.Trip", "Trip")
-                        .WithMany("Destinations")
-                        .HasForeignKey("TripId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-
-                    b.Navigation("Branch");
-
-                    b.Navigation("Trip");
                 });
 
             modelBuilder.Entity("Transport.Domain.Entities.TripProduct", b =>
@@ -421,13 +403,13 @@ namespace Transport.Infrastructure.Data.Migrations
                 {
                     b.Navigation("DestinationProducts");
 
+                    b.Navigation("DestinationTrips");
+
                     b.Navigation("OriginProducts");
 
                     b.Navigation("OriginTrips");
 
                     b.Navigation("ProductsAtBranch");
-
-                    b.Navigation("TripDestinations");
 
                     b.Navigation("Users");
                 });
@@ -444,8 +426,6 @@ namespace Transport.Infrastructure.Data.Migrations
 
             modelBuilder.Entity("Transport.Domain.Entities.Trip", b =>
                 {
-                    b.Navigation("Destinations");
-
                     b.Navigation("TripProducts");
                 });
 

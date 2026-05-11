@@ -12,5 +12,5 @@ public class Branch
     public ICollection<Product> OriginProducts { get; set; } = new List<Product>();
     public ICollection<Product> DestinationProducts { get; set; } = new List<Product>();
     public ICollection<Trip> OriginTrips { get; set; } = new List<Trip>();
-    public ICollection<Trip> DestinationTrips { get; set; } = new List<Trip>();
+    public ICollection<TripDestination> TripDestinations { get; set; } = new List<TripDestination>();
 }

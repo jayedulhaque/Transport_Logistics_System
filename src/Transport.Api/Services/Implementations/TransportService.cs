@@ -104,8 +104,10 @@ public class TransportService(ITransportRepository repo, TokenService tokens) : 
             return Results.BadRequest(new { error = "Cannot delete a branch that has users assigned." });
         if (await repo.Products.AnyAsync(p => p.OriginBranchId == id || p.DestinationBranchId == id || p.CurrentBranchId == id, ct))
             return Results.BadRequest(new { error = "Cannot delete a branch referenced by products." });
-        if (await repo.Trips.AnyAsync(t => t.OriginBranchId == id || t.DestinationBranchId == id, ct))
-            return Results.BadRequest(new { error = "Cannot delete a branch referenced by trips." });
+        if (await repo.Trips.AnyAsync(t => t.OriginBranchId == id, ct))
+            return Results.BadRequest(new { error = "Cannot delete a branch referenced as a trip origin." });
+        if (await repo.Trips.AnyAsync(t => t.Destinations.Any(d => d.BranchId == id), ct))
+            return Results.BadRequest(new { error = "Cannot delete a branch referenced as a trip destination." });
 
         repo.Remove(branch);
         await repo.SaveChangesAsync(ct);
@@ -179,16 +181,41 @@ public class TransportService(ITransportRepository repo, TokenService tokens) : 
 
         if (principal.IsInRole(nameof(UserRole.Admin)))
         {
-            var rows = await (from p in repo.Products.AsNoTracking()
-                              where p.Status == ProductStatus.Delivered
-                                    && p.DeliveredAt != null
-                                    && (!startUtc.HasValue || p.DeliveredAt >= startUtc.Value)
-                                    && (!endUtcExclusive.HasValue || p.DeliveredAt < endUtcExclusive.Value)
-                              join b in repo.Branches.AsNoTracking() on p.DestinationBranchId equals b.Id
-                              group p by new { p.DestinationBranchId, b.BranchName } into g
-                              orderby g.Key.BranchName
-                              select new BranchCollectionRowDto(g.Key.DestinationBranchId, g.Key.BranchName, g.Sum(x => x.ShippingPrice)))
+            var delivered = repo.Products.AsNoTracking()
+                .Where(p => p.Status == ProductStatus.Delivered
+                            && p.DeliveredAt != null
+                            && (!startUtc.HasValue || p.DeliveredAt >= startUtc.Value)
+                            && (!endUtcExclusive.HasValue || p.DeliveredAt < endUtcExclusive.Value));
+
+            var originSums = await delivered
+                .GroupBy(p => p.OriginBranchId)
+                .Select(g => new { BranchId = g.Key, Amount = g.Sum(x => x.AmountReceivedAtOrigin) })
                 .ToListAsync(ct);
+
+            var destSums = await delivered
+                .GroupBy(p => p.DestinationBranchId)
+                .Select(g => new { BranchId = g.Key, Amount = g.Sum(x => x.AmountReceivedAtDestination) })
+                .ToListAsync(ct);
+
+            var originDict = originSums.ToDictionary(x => x.BranchId, x => x.Amount);
+            var destDict = destSums.ToDictionary(x => x.BranchId, x => x.Amount);
+            var branchIds = originDict.Keys.Union(destDict.Keys).Distinct().ToList();
+
+            var names = await repo.Branches.AsNoTracking()
+                .Where(b => branchIds.Contains(b.Id))
+                .ToDictionaryAsync(b => b.Id, b => b.BranchName, ct);
+
+            var rows = branchIds
+                .Select(id =>
+                {
+                    var o = originDict.GetValueOrDefault(id);
+                    var d = destDict.GetValueOrDefault(id);
+                    var label = names.TryGetValue(id, out var bn) ? bn : $"Branch #{id}";
+                    return new BranchCollectionRowDto(id, label, o, d, o + d);
+                })
+                .OrderBy(r => r.BranchName)
+                .ToList();
+
             return Results.Ok(rows);
         }
 
@@ -201,29 +228,129 @@ public class TransportService(ITransportRepository repo, TokenService tokens) : 
             var name = await repo.Branches.AsNoTracking().Where(b => b.Id == branchId).Select(b => b.BranchName).FirstOrDefaultAsync(ct);
             if (name is null) return Results.NotFound();
 
-            var total = await repo.Products.AsNoTracking()
+            var asOrigin = await repo.Products.AsNoTracking()
+                .Where(p => p.Status == ProductStatus.Delivered
+                            && p.OriginBranchId == branchId
+                            && p.DeliveredAt != null
+                            && (!startUtc.HasValue || p.DeliveredAt >= startUtc.Value)
+                            && (!endUtcExclusive.HasValue || p.DeliveredAt < endUtcExclusive.Value))
+                .SumAsync(p => (decimal?)p.AmountReceivedAtOrigin, ct) ?? 0m;
+
+            var asDestination = await repo.Products.AsNoTracking()
                 .Where(p => p.Status == ProductStatus.Delivered
                             && p.DestinationBranchId == branchId
                             && p.DeliveredAt != null
                             && (!startUtc.HasValue || p.DeliveredAt >= startUtc.Value)
                             && (!endUtcExclusive.HasValue || p.DeliveredAt < endUtcExclusive.Value))
-                .SumAsync(p => (decimal?)p.ShippingPrice, ct) ?? 0m;
+                .SumAsync(p => (decimal?)p.AmountReceivedAtDestination, ct) ?? 0m;
 
-            return Results.Ok(new List<BranchCollectionRowDto> { new(branchId, name, total) });
+            return Results.Ok(new List<BranchCollectionRowDto>
+            {
+                new(branchId, name, asOrigin, asDestination, asOrigin + asDestination),
+            });
         }
 
         return Results.Forbid();
     }
 
+    public async Task<IResult> GetBookingsByDestinationAsync(
+        string? fromDate,
+        string? toDate,
+        int? originBranchId,
+        ClaimsPrincipal principal,
+        CancellationToken ct = default)
+    {
+        DateTime? startUtc = null;
+        DateTime? endUtcExclusive = null;
+
+        if (!string.IsNullOrWhiteSpace(fromDate))
+        {
+            if (!DateOnly.TryParse(fromDate, out var from)) return Results.BadRequest(new { error = "Invalid fromDate. Use YYYY-MM-DD." });
+            startUtc = from.ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc);
+        }
+        if (!string.IsNullOrWhiteSpace(toDate))
+        {
+            if (!DateOnly.TryParse(toDate, out var to)) return Results.BadRequest(new { error = "Invalid toDate. Use YYYY-MM-DD." });
+            endUtcExclusive = to.AddDays(1).ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc);
+        }
+        if (startUtc.HasValue && endUtcExclusive.HasValue && startUtc.Value >= endUtcExclusive.Value)
+            return Results.BadRequest(new { error = "fromDate must be before or equal to toDate." });
+
+        int originId;
+        if (principal.IsInRole(nameof(UserRole.BranchManager)))
+        {
+            var branchIdResult = TryGetBranchId(principal, "Branch manager must have a branch assigned.");
+            if (branchIdResult.error is not null) return branchIdResult.error;
+            originId = branchIdResult.branchId!.Value;
+        }
+        else if (principal.IsInRole(nameof(UserRole.Admin)))
+        {
+            if (!originBranchId.HasValue || originBranchId.Value <= 0)
+                return Results.BadRequest(new { error = "originBranchId is required for admin users." });
+            originId = originBranchId.Value;
+            if (!await repo.Branches.AnyAsync(b => b.Id == originId, ct))
+                return Results.BadRequest(new { error = "Invalid originBranchId." });
+        }
+        else return Results.Forbid();
+
+        var originName = await repo.Branches.AsNoTracking().Where(b => b.Id == originId).Select(b => b.BranchName).FirstOrDefaultAsync(ct);
+        if (originName is null) return Results.NotFound();
+
+        var filtered = repo.Products.AsNoTracking()
+            .Where(p => p.OriginBranchId == originId
+                        && p.Status == ProductStatus.Pending
+                        && (!startUtc.HasValue || p.CreatedAt >= startUtc.Value)
+                        && (!endUtcExclusive.HasValue || p.CreatedAt < endUtcExclusive.Value));
+
+        // Sum in CLR after materializing rows so totals stay exact decimal currency (avoids DB/provider aggregate quirks).
+        var rows = await (from p in filtered
+                          join d in repo.Branches.AsNoTracking() on p.DestinationBranchId equals d.Id
+                          select new { p.DestinationBranchId, DestinationBranchName = d.BranchName, p.ShippingPrice })
+            .ToListAsync(ct);
+
+        var ordered = rows
+            .GroupBy(x => (x.DestinationBranchId, x.DestinationBranchName))
+            .Select(g => new BookingsByDestinationRowDto(
+                g.Key.DestinationBranchId,
+                g.Key.DestinationBranchName,
+                g.Count(),
+                RoundMoney(g.Sum(x => x.ShippingPrice))))
+            .OrderByDescending(r => r.ProductCount)
+            .ThenBy(r => r.DestinationBranchName)
+            .ToList();
+
+        return Results.Ok(new BookingsByDestinationReportDto(originId, originName, ordered));
+    }
+
     public async Task<IResult> GetPendingDriversAsync(ClaimsPrincipal principal, CancellationToken ct = default)
     {
-        if (!principal.IsInRole(nameof(UserRole.Admin))) return Results.Forbid();
-        var list = await repo.DriverProfiles.AsNoTracking()
-            .Where(d => !d.IsApproved)
-            .Include(d => d.User).ThenInclude(u => u.Branch)
-            .Select(d => new PendingDriverDto(d.Id, d.UserId, d.User.FullName, d.User.Phone, d.VehicleNumber, d.User.BranchId, d.User.Branch != null ? d.User.Branch.BranchName : null))
-            .ToListAsync(ct);
-        return Results.Ok(list);
+        if (principal.IsInRole(nameof(UserRole.Admin)))
+        {
+            var list = await repo.DriverProfiles.AsNoTracking()
+                .Where(d => !d.IsApproved)
+                .Include(d => d.User).ThenInclude(u => u.Branch)
+                .OrderBy(d => d.User.FullName)
+                .Select(d => new PendingDriverDto(d.Id, d.UserId, d.User.FullName, d.User.Phone, d.VehicleNumber, d.User.BranchId, d.User.Branch != null ? d.User.Branch.BranchName : null))
+                .ToListAsync(ct);
+            return Results.Ok(list);
+        }
+
+        if (principal.IsInRole(nameof(UserRole.BranchManager)))
+        {
+            var branchIdResult = TryGetBranchId(principal, "Branch manager must have a branch assigned.");
+            if (branchIdResult.error is not null) return branchIdResult.error;
+            var bid = branchIdResult.branchId!.Value;
+
+            var list = await repo.DriverProfiles.AsNoTracking()
+                .Where(d => !d.IsApproved && d.User.BranchId == bid)
+                .Include(d => d.User).ThenInclude(u => u.Branch)
+                .OrderBy(d => d.User.FullName)
+                .Select(d => new PendingDriverDto(d.Id, d.UserId, d.User.FullName, d.User.Phone, d.VehicleNumber, d.User.BranchId, d.User.Branch != null ? d.User.Branch.BranchName : null))
+                .ToListAsync(ct);
+            return Results.Ok(list);
+        }
+
+        return Results.Forbid();
     }
 
     public async Task<IResult> GetApprovedDriversAsync(ClaimsPrincipal principal, CancellationToken ct = default)
@@ -269,9 +396,24 @@ public class TransportService(ITransportRepository repo, TokenService tokens) : 
 
     public async Task<IResult> ApproveDriverAsync(int id, ClaimsPrincipal principal, IHubContext<TransportHub> hub, CancellationToken ct = default)
     {
-        if (!principal.IsInRole(nameof(UserRole.Admin))) return Results.Forbid();
         var profile = await repo.DriverProfiles.Include(d => d.User).FirstOrDefaultAsync(d => d.Id == id, ct);
         if (profile is null) return Results.NotFound();
+
+        if (principal.IsInRole(nameof(UserRole.Admin)))
+        {
+            // Admin may approve any pending driver.
+        }
+        else if (principal.IsInRole(nameof(UserRole.BranchManager)))
+        {
+            var branchIdResult = TryGetBranchId(principal, "Branch manager must have a branch assigned.");
+            if (branchIdResult.error is not null) return branchIdResult.error;
+            if (profile.User.BranchId != branchIdResult.branchId)
+                return Results.Forbid();
+        }
+        else return Results.Forbid();
+
+        if (profile.IsApproved) return Results.NoContent();
+
         profile.IsApproved = true;
         await repo.SaveChangesAsync(ct);
         await hub.Clients.Group($"user-{profile.UserId}").SendAsync("DriverApproved", profile.Id, ct);
@@ -283,6 +425,63 @@ public class TransportService(ITransportRepository repo, TokenService tokens) : 
         var userId = GetUserId(principal);
         var profile = await repo.DriverProfiles.AsNoTracking().FirstOrDefaultAsync(d => d.UserId == userId, ct);
         return Results.Ok(new DriverStatusResponse(profile?.IsApproved ?? false, profile?.Id));
+    }
+
+    public async Task<IResult> GetDriverTripStateAsync(ClaimsPrincipal principal, CancellationToken ct = default)
+    {
+        if (!principal.IsInRole(nameof(UserRole.Driver))) return Results.Forbid();
+        var userId = GetUserId(principal);
+        var profile = await repo.DriverProfiles.AsNoTracking()
+            .FirstOrDefaultAsync(d => d.UserId == userId, ct);
+        if (profile is null)
+            return Results.Ok(new DriverTripStateResponse("None", null, null, null, 0));
+
+        var trip = await repo.Trips.AsNoTracking()
+            .Include(t => t.Destinations).ThenInclude(d => d.Branch)
+            .Include(t => t.TripProducts)
+            .Where(t => t.DriverProfileId == profile.Id && t.Status != TripStatus.Completed)
+            .OrderByDescending(t => t.LoadTime)
+            .FirstOrDefaultAsync(ct);
+
+        if (trip is null)
+            return Results.Ok(new DriverTripStateResponse("None", null, null, null, 0));
+
+        var destLabel = string.Join(", ", trip.Destinations.OrderBy(d => d.Branch.BranchName).Select(d => d.Branch.BranchName));
+        if (trip.Status == TripStatus.AwaitingLoad)
+            return Results.Ok(new DriverTripStateResponse(
+                "AwaitingDriverStart",
+                trip.Id,
+                destLabel,
+                trip.DriverPaymentAmount,
+                trip.TripProducts.Count));
+
+        return Results.Ok(new DriverTripStateResponse(
+            "InTransit",
+            trip.Id,
+            destLabel,
+            trip.DriverPaymentAmount,
+            trip.TripProducts.Count));
+    }
+
+    public async Task<IResult> StartDriverTripAsync(Guid tripId, ClaimsPrincipal principal, CancellationToken ct = default)
+    {
+        if (!principal.IsInRole(nameof(UserRole.Driver))) return Results.Forbid();
+        var userId = GetUserId(principal);
+        var profile = await repo.DriverProfiles.FirstOrDefaultAsync(d => d.UserId == userId, ct);
+        if (profile is null) return Results.NotFound();
+
+        var trip = await repo.Trips.Include(t => t.TripProducts).FirstOrDefaultAsync(t => t.Id == tripId, ct);
+        if (trip is null) return Results.NotFound();
+        if (trip.DriverProfileId != profile.Id) return Results.Forbid();
+        if (trip.Status != TripStatus.AwaitingLoad)
+            return Results.BadRequest(new { error = "Trip is not waiting for you to start, or was already started." });
+        if (trip.TripProducts.Count == 0)
+            return Results.BadRequest(new { error = "Staff must load at least one parcel before you start this trip." });
+
+        trip.Status = TripStatus.Active;
+        trip.LoadTime = DateTime.UtcNow;
+        await repo.SaveChangesAsync(ct);
+        return Results.NoContent();
     }
 
     public async Task<IResult> UpdateDriverPresenceAsync(PresenceRequest body, ClaimsPrincipal principal, CancellationToken ct = default)
@@ -528,11 +727,248 @@ public class TransportService(ITransportRepository repo, TokenService tokens) : 
         if (branchIdResult.error is not null) return branchIdResult.error;
         var branchId = branchIdResult.branchId!.Value;
 
-        var list = await repo.DriverProfiles.AsNoTracking()
-            .Where(d => d.IsApproved && d.IsOnline && d.User.BranchId == branchId)
-            .Select(d => new AvailableDriverDto(d.Id, d.User.FullName, d.VehicleNumber, d.IsOnline))
+        var trips = await repo.Trips.AsNoTracking()
+            .Include(t => t.DriverProfile).ThenInclude(d => d.User)
+            .Include(t => t.Destinations).ThenInclude(d => d.Branch)
+            .Where(t => t.Status == TripStatus.AwaitingLoad
+                        && t.OriginBranchId == branchId
+                        && t.DriverProfile.User.BranchId == branchId)
+            .OrderBy(t => t.DriverProfile.User.FullName)
             .ToListAsync(ct);
+        var list = trips.Select(t => new AvailableTripForStaffDto(
+            t.Id,
+            t.DriverProfileId,
+            t.DriverProfile.User.FullName,
+            t.DriverProfile.VehicleNumber,
+            string.Join(", ", t.Destinations.OrderBy(d => d.Branch.BranchName).Select(d => d.Branch.BranchName)),
+            t.DriverPaymentAmount)).ToList();
         return Results.Ok(list);
+    }
+
+    public async Task<IResult> CreateTripAsync(CreateTripRequest body, ClaimsPrincipal principal, CancellationToken ct = default)
+    {
+        if (!principal.IsInRole(nameof(UserRole.Admin)) && !principal.IsInRole(nameof(UserRole.BranchManager))) return Results.Forbid();
+        var payment = RoundMoney(body.DriverPaymentAmount);
+        if (payment < 0) return Results.BadRequest(new { error = "Driver payment cannot be negative." });
+
+        int originId;
+        if (principal.IsInRole(nameof(UserRole.BranchManager)))
+        {
+            var branchIdResult = TryGetBranchId(principal, "Branch manager must have a branch assigned.");
+            if (branchIdResult.error is not null) return branchIdResult.error;
+            originId = branchIdResult.branchId!.Value;
+            if (body.OriginBranchId is { } ob && ob != originId)
+                return Results.BadRequest(new { error = "Branch managers can only create trips for their own branch as origin." });
+        }
+        else
+        {
+            if (!body.OriginBranchId.HasValue || body.OriginBranchId.Value <= 0)
+                return Results.BadRequest(new { error = "originBranchId is required for admins." });
+            originId = body.OriginBranchId.Value;
+        }
+
+        if (!await repo.Branches.AnyAsync(b => b.Id == originId, ct))
+            return Results.BadRequest(new { error = "Invalid origin branch." });
+        var destIds = (body.DestinationBranchIds ?? Array.Empty<int>()).Distinct().OrderBy(x => x).ToList();
+        if (destIds.Count == 0)
+            return Results.BadRequest(new { error = "Select at least one destination branch." });
+        foreach (var bid in destIds)
+        {
+            if (bid == originId)
+                return Results.BadRequest(new { error = "Each destination branch must differ from the origin branch." });
+            if (!await repo.Branches.AnyAsync(b => b.Id == bid, ct))
+                return Results.BadRequest(new { error = $"Invalid destination branch id {bid}." });
+        }
+
+        var driver = await repo.DriverProfiles.Include(d => d.User).FirstOrDefaultAsync(d => d.Id == body.DriverProfileId, ct);
+        if (driver is null || !driver.IsApproved)
+            return Results.BadRequest(new { error = "Invalid or unapproved driver." });
+        if (driver.User.BranchId != originId)
+            return Results.BadRequest(new { error = "Driver must belong to the trip origin branch." });
+
+        var openTrip = await repo.Trips.AnyAsync(
+            t => t.DriverProfileId == driver.Id && (t.Status == TripStatus.AwaitingLoad || t.Status == TripStatus.Active), ct);
+        if (openTrip)
+            return Results.BadRequest(new { error = "Driver already has an open trip. Complete it before starting another." });
+
+        var trip = new Trip
+        {
+            Id = Guid.NewGuid(),
+            DriverProfileId = driver.Id,
+            OriginBranchId = originId,
+            LoadTime = DateTime.UtcNow,
+            Status = TripStatus.AwaitingLoad,
+            DriverPaymentAmount = payment,
+            EarningsCredited = false,
+        };
+        await repo.AddAsync(trip, ct);
+        foreach (var bid in destIds)
+            await repo.AddAsync(new TripDestination { TripId = trip.Id, BranchId = bid }, ct);
+        await repo.SaveChangesAsync(ct);
+        return Results.Created($"/api/trips/{trip.Id}", new { id = trip.Id });
+    }
+
+    public async Task<IResult> GetTripsAsync(ClaimsPrincipal principal, CancellationToken ct = default)
+    {
+        if (!principal.IsInRole(nameof(UserRole.Admin)) && !principal.IsInRole(nameof(UserRole.BranchManager))) return Results.Forbid();
+
+        IQueryable<Trip> q = repo.Trips.AsNoTracking()
+            .Include(t => t.DriverProfile).ThenInclude(d => d.User)
+            .Include(t => t.OriginBranch)
+            .Include(t => t.Destinations).ThenInclude(d => d.Branch)
+            .Include(t => t.TripProducts).ThenInclude(tp => tp.Product);
+
+        if (principal.IsInRole(nameof(UserRole.BranchManager)))
+        {
+            var branchIdResult = TryGetBranchId(principal, "Branch manager must have a branch assigned.");
+            if (branchIdResult.error is not null) return branchIdResult.error;
+            var bid = branchIdResult.branchId!.Value;
+            q = q.Where(t => t.OriginBranchId == bid);
+        }
+
+        var list = await q.OrderByDescending(t => t.LoadTime).ToListAsync(ct);
+        var rows = list.Select(t => new TripListItemDto(
+            t.Id,
+            t.DriverProfileId,
+            t.DriverProfile.User.FullName,
+            t.DriverProfile.VehicleNumber,
+            t.OriginBranchId,
+            t.OriginBranch.BranchName,
+            t.Destinations.OrderBy(d => d.BranchId).Select(d => d.BranchId).ToList(),
+            string.Join(", ", t.Destinations.OrderBy(d => d.Branch.BranchName).Select(d => d.Branch.BranchName)),
+            t.Status.ToString(),
+            t.DriverPaymentAmount,
+            t.TripProducts.Count,
+            t.TripProducts.Count(tp => tp.Product.Status == ProductStatus.InTransit),
+            t.LoadTime)).ToList();
+        return Results.Ok(rows);
+    }
+
+    public async Task<IResult> UpdateTripAsync(Guid id, UpdateTripRequest body, ClaimsPrincipal principal, CancellationToken ct = default)
+    {
+        if (!principal.IsInRole(nameof(UserRole.Admin)) && !principal.IsInRole(nameof(UserRole.BranchManager))) return Results.Forbid();
+
+        var trip = await repo.Trips
+            .Include(t => t.TripProducts).ThenInclude(tp => tp.Product)
+            .Include(t => t.DriverProfile).ThenInclude(d => d.User)
+            .Include(t => t.Destinations)
+            .FirstOrDefaultAsync(t => t.Id == id, ct);
+        if (trip is null) return Results.NotFound();
+        if (trip.Status == TripStatus.Completed)
+            return Results.BadRequest(new { error = "Completed trips cannot be edited." });
+
+        if (principal.IsInRole(nameof(UserRole.BranchManager)))
+        {
+            var branchIdResult = TryGetBranchId(principal, "Branch manager must have a branch assigned.");
+            if (branchIdResult.error is not null) return branchIdResult.error;
+            if (trip.OriginBranchId != branchIdResult.branchId) return Results.Forbid();
+        }
+
+        var payment = RoundMoney(body.DriverPaymentAmount);
+        if (payment < 0) return Results.BadRequest(new { error = "Driver payment cannot be negative." });
+
+        var requestedDestIds = (body.DestinationBranchIds ?? Array.Empty<int>()).Distinct().OrderBy(x => x).ToList();
+        if (requestedDestIds.Count == 0)
+            return Results.BadRequest(new { error = "Select at least one destination branch." });
+        foreach (var bid in requestedDestIds)
+        {
+            if (bid == trip.OriginBranchId)
+                return Results.BadRequest(new { error = "Each destination branch must differ from the origin branch." });
+            if (!await repo.Branches.AnyAsync(b => b.Id == bid, ct))
+                return Results.BadRequest(new { error = $"Invalid destination branch id {bid}." });
+        }
+
+        var currentDestIds = trip.Destinations.Select(d => d.BranchId).OrderBy(x => x).ToList();
+        var hasProducts = trip.TripProducts.Count > 0;
+        if (hasProducts)
+        {
+            if (body.DriverProfileId != trip.DriverProfileId || !currentDestIds.SequenceEqual(requestedDestIds))
+                return Results.BadRequest(new { error = "Cannot change driver or allowed destinations after products have been loaded onto this trip." });
+        }
+        else
+        {
+            var newDriver = await repo.DriverProfiles.Include(d => d.User).FirstOrDefaultAsync(d => d.Id == body.DriverProfileId, ct);
+            if (newDriver is null || !newDriver.IsApproved)
+                return Results.BadRequest(new { error = "Invalid or unapproved driver." });
+            if (newDriver.User.BranchId != trip.OriginBranchId)
+                return Results.BadRequest(new { error = "Driver must belong to the trip origin branch." });
+
+            var otherOpen = await repo.Trips.AnyAsync(
+                t => t.Id != trip.Id
+                     && t.DriverProfileId == newDriver.Id
+                     && (t.Status == TripStatus.AwaitingLoad || t.Status == TripStatus.Active), ct);
+            if (otherOpen)
+                return Results.BadRequest(new { error = "Selected driver already has another open trip." });
+
+            trip.DriverProfileId = newDriver.Id;
+            foreach (var d in trip.Destinations.ToList())
+                repo.Remove(d);
+            foreach (var bid in requestedDestIds)
+                await repo.AddAsync(new TripDestination { TripId = trip.Id, BranchId = bid }, ct);
+        }
+
+        trip.DriverPaymentAmount = payment;
+        await repo.SaveChangesAsync(ct);
+        return Results.NoContent();
+    }
+
+    public async Task<IResult> GetDriverEarningsAsync(ClaimsPrincipal principal, CancellationToken ct = default)
+    {
+        if (!principal.IsInRole(nameof(UserRole.Admin)) && !principal.IsInRole(nameof(UserRole.BranchManager))) return Results.Forbid();
+
+        IQueryable<DriverProfile> q = repo.DriverProfiles.AsNoTracking()
+            .Where(d => d.IsApproved)
+            .Include(d => d.User).ThenInclude(u => u.Branch);
+
+        if (principal.IsInRole(nameof(UserRole.BranchManager)))
+        {
+            var branchIdResult = TryGetBranchId(principal, "Branch manager must have a branch assigned.");
+            if (branchIdResult.error is not null) return branchIdResult.error;
+            var bid = branchIdResult.branchId!.Value;
+            q = q.Where(d => d.User.BranchId == bid);
+        }
+
+        var list = await q.OrderBy(d => d.User.FullName).ToListAsync(ct);
+        var rows = list.Select(d =>
+        {
+            var accrued = RoundMoney(d.AccruedTripEarnings);
+            var paid = RoundMoney(d.PaidToDriver);
+            return new DriverEarningsRowDto(
+                d.Id,
+                d.User.FullName,
+                d.VehicleNumber,
+                d.User.BranchId,
+                d.User.Branch?.BranchName,
+                accrued,
+                paid,
+                RoundMoney(accrued - paid));
+        }).ToList();
+        return Results.Ok(rows);
+    }
+
+    public async Task<IResult> PayDriverEarningsAsync(int driverProfileId, PayDriverEarningsRequest body, ClaimsPrincipal principal, CancellationToken ct = default)
+    {
+        if (!principal.IsInRole(nameof(UserRole.Admin)) && !principal.IsInRole(nameof(UserRole.BranchManager))) return Results.Forbid();
+        var amount = RoundMoney(body.Amount);
+        if (amount <= 0) return Results.BadRequest(new { error = "Amount must be greater than zero." });
+
+        var profile = await repo.DriverProfiles.Include(d => d.User).FirstOrDefaultAsync(d => d.Id == driverProfileId, ct);
+        if (profile is null) return Results.NotFound();
+        if (!profile.IsApproved) return Results.BadRequest(new { error = "Driver is not approved." });
+
+        if (principal.IsInRole(nameof(UserRole.BranchManager)))
+        {
+            var branchIdResult = TryGetBranchId(principal, "Branch manager must have a branch assigned.");
+            if (branchIdResult.error is not null) return branchIdResult.error;
+            if (profile.User.BranchId != branchIdResult.branchId) return Results.Forbid();
+        }
+
+        var due = RoundMoney(profile.AccruedTripEarnings - profile.PaidToDriver);
+        if (amount > due) return Results.BadRequest(new { error = "Amount exceeds outstanding due." });
+
+        profile.PaidToDriver = RoundMoney(profile.PaidToDriver + amount);
+        await repo.SaveChangesAsync(ct);
+        return Results.NoContent();
     }
 
     public async Task<IResult> LookupProductAsync(string tracking, string? mode, ClaimsPrincipal principal, CancellationToken ct = default)
@@ -568,7 +1004,12 @@ public class TransportService(ITransportRepository repo, TokenService tokens) : 
         var originExists = await repo.Branches.AnyAsync(b => b.Id == body.OriginBranchId, ct);
         var destExists = await repo.Branches.AnyAsync(b => b.Id == body.DestinationBranchId, ct);
         if (!originExists || !destExists) return Results.BadRequest(new { error = "Invalid origin or destination branch." });
-        if (body.ShippingPrice < 0) return Results.BadRequest(new { error = "Shipping price cannot be negative." });
+        var shipping = RoundMoney(body.ShippingPrice);
+        var originReceived = RoundMoney(body.AmountReceivedAtOrigin);
+        if (shipping < 0) return Results.BadRequest(new { error = "Shipping price cannot be negative." });
+        if (originReceived < 0) return Results.BadRequest(new { error = "Origin received amount cannot be negative." });
+        if (originReceived > shipping)
+            return Results.BadRequest(new { error = "Origin received amount cannot exceed shipping price." });
 
         var product = new Product
         {
@@ -581,7 +1022,9 @@ public class TransportService(ITransportRepository repo, TokenService tokens) : 
             ReceiverName = body.ReceiverName.Trim(),
             ReceiverPhone = body.ReceiverPhone.Trim(),
             ReceiverAddress = body.ReceiverAddress.Trim(),
-            ShippingPrice = body.ShippingPrice,
+            ShippingPrice = shipping,
+            AmountReceivedAtOrigin = originReceived,
+            AmountReceivedAtDestination = 0m,
             OriginBranchId = body.OriginBranchId,
             DestinationBranchId = body.DestinationBranchId,
             CurrentBranchId = body.OriginBranchId,
@@ -601,7 +1044,7 @@ public class TransportService(ITransportRepository repo, TokenService tokens) : 
                               join ob in repo.Branches.AsNoTracking() on p.OriginBranchId equals ob.Id
                               join dbDest in repo.Branches.AsNoTracking() on p.DestinationBranchId equals dbDest.Id
                               orderby p.CreatedAt descending
-                              select new ProductListItemDto(p.Id, p.TrackingNumber, p.Description, p.SenderName, p.SenderPhone, p.SenderAddress, p.ReceiverName, p.ReceiverPhone, p.ReceiverAddress, p.OriginBranchId, p.DestinationBranchId, ob.BranchName, dbDest.BranchName, p.ShippingPrice, p.Status.ToString(), p.CreatedAt))
+                              select new ProductListItemDto(p.Id, p.TrackingNumber, p.Description, p.SenderName, p.SenderPhone, p.SenderAddress, p.ReceiverName, p.ReceiverPhone, p.ReceiverAddress, p.OriginBranchId, p.DestinationBranchId, ob.BranchName, dbDest.BranchName, p.ShippingPrice, p.AmountReceivedAtOrigin, p.AmountReceivedAtDestination, p.ShippingPrice - p.AmountReceivedAtOrigin - p.AmountReceivedAtDestination, p.Status.ToString(), p.CreatedAt))
                 .ToListAsync(ct);
             return Results.Ok(list);
         }
@@ -616,7 +1059,7 @@ public class TransportService(ITransportRepository repo, TokenService tokens) : 
                               join ob in repo.Branches.AsNoTracking() on p.OriginBranchId equals ob.Id
                               join dbDest in repo.Branches.AsNoTracking() on p.DestinationBranchId equals dbDest.Id
                               orderby p.CreatedAt descending
-                              select new ProductListItemDto(p.Id, p.TrackingNumber, p.Description, p.SenderName, p.SenderPhone, p.SenderAddress, p.ReceiverName, p.ReceiverPhone, p.ReceiverAddress, p.OriginBranchId, p.DestinationBranchId, ob.BranchName, dbDest.BranchName, p.ShippingPrice, p.Status.ToString(), p.CreatedAt))
+                              select new ProductListItemDto(p.Id, p.TrackingNumber, p.Description, p.SenderName, p.SenderPhone, p.SenderAddress, p.ReceiverName, p.ReceiverPhone, p.ReceiverAddress, p.OriginBranchId, p.DestinationBranchId, ob.BranchName, dbDest.BranchName, p.ShippingPrice, p.AmountReceivedAtOrigin, p.AmountReceivedAtDestination, p.ShippingPrice - p.AmountReceivedAtOrigin - p.AmountReceivedAtDestination, p.Status.ToString(), p.CreatedAt))
                 .ToListAsync(ct);
             return Results.Ok(list);
         }
@@ -629,7 +1072,12 @@ public class TransportService(ITransportRepository repo, TokenService tokens) : 
         var originExists = await repo.Branches.AnyAsync(b => b.Id == body.OriginBranchId, ct);
         var destExists = await repo.Branches.AnyAsync(b => b.Id == body.DestinationBranchId, ct);
         if (!originExists || !destExists) return Results.BadRequest(new { error = "Invalid origin or destination branch." });
-        if (body.ShippingPrice < 0) return Results.BadRequest(new { error = "Shipping price cannot be negative." });
+        var shipping = RoundMoney(body.ShippingPrice);
+        var originReceived = RoundMoney(body.AmountReceivedAtOrigin);
+        if (shipping < 0) return Results.BadRequest(new { error = "Shipping price cannot be negative." });
+        if (originReceived < 0) return Results.BadRequest(new { error = "Origin received amount cannot be negative." });
+        if (originReceived > shipping)
+            return Results.BadRequest(new { error = "Origin received amount cannot exceed shipping price." });
 
         var product = await repo.Products.FirstOrDefaultAsync(p => p.Id == id, ct);
         if (product is null) return Results.NotFound();
@@ -654,7 +1102,11 @@ public class TransportService(ITransportRepository repo, TokenService tokens) : 
         product.ReceiverAddress = body.ReceiverAddress.Trim();
         product.OriginBranchId = body.OriginBranchId;
         product.DestinationBranchId = body.DestinationBranchId;
-        product.ShippingPrice = body.ShippingPrice;
+        product.ShippingPrice = shipping;
+        product.AmountReceivedAtOrigin = originReceived;
+        var maxDestinationCollection = Math.Max(0m, product.ShippingPrice - product.AmountReceivedAtOrigin);
+        if (product.AmountReceivedAtDestination > maxDestinationCollection)
+            product.AmountReceivedAtDestination = maxDestinationCollection;
         if (product.Status == ProductStatus.Pending) product.CurrentBranchId = body.OriginBranchId;
         await repo.SaveChangesAsync(ct);
         return Results.NoContent();
@@ -700,9 +1152,18 @@ public class TransportService(ITransportRepository repo, TokenService tokens) : 
         var enteredPhone = body.ReceiverPhone.Trim();
         if (!string.Equals(enteredPhone, product.ReceiverPhone, StringComparison.Ordinal))
             return Results.BadRequest(new { error = "Receiver phone does not match this product." });
-        if (!body.PaidBySender && !body.PaymentReceivedAtBranch)
-            return Results.BadRequest(new { error = "Confirm payment at branch before delivery." });
+        var dueBeforeDelivery = Math.Max(0m, product.ShippingPrice - product.AmountReceivedAtOrigin);
+        var amountAtDest = RoundMoney(body.AmountReceivedAtDestination);
+        if (amountAtDest < 0)
+            return Results.BadRequest(new { error = "Destination received amount cannot be negative." });
+        if (amountAtDest > dueBeforeDelivery)
+            return Results.BadRequest(new { error = "Destination received amount cannot exceed pending due amount." });
+        if (dueBeforeDelivery > 0 && amountAtDest != dueBeforeDelivery)
+            return Results.BadRequest(new { error = "Full due amount must be confirmed at destination before delivery." });
+        if (dueBeforeDelivery == 0 && amountAtDest > 0)
+            return Results.BadRequest(new { error = "No due amount remains for this product." });
 
+        product.AmountReceivedAtDestination = amountAtDest;
         product.Status = ProductStatus.Delivered;
         product.DeliveredAt = DateTime.UtcNow;
         if (product.CurrentBranchId is null) product.CurrentBranchId = product.DestinationBranchId;
@@ -730,29 +1191,57 @@ public class TransportService(ITransportRepository repo, TokenService tokens) : 
             if (p.CurrentBranchId != staffBranchId) return Results.BadRequest(new { error = $"Product {p.Id} is not at your branch." });
             if (p.Status != ProductStatus.Pending) return Results.BadRequest(new { error = $"Product {p.TrackingNumber} is not pending." });
         }
-        var destId = products[0].DestinationBranchId;
-        if (products.Any(p => p.DestinationBranchId != destId))
-            return Results.BadRequest(new { error = "All products in a load must share the same destination branch." });
 
-        var trip = new Trip
+        if (body.TripId is { } plannedTripId)
+        {
+            var trip = await repo.Trips.Include(t => t.Destinations).FirstOrDefaultAsync(t => t.Id == plannedTripId, ct);
+            if (trip is null) return Results.BadRequest(new { error = "Trip not found." });
+            if (trip.Status == TripStatus.Completed) return Results.BadRequest(new { error = "Trip is already completed." });
+            if (trip.OriginBranchId != staffBranchId) return Results.BadRequest(new { error = "Trip does not start at your branch." });
+            if (trip.DriverProfileId != driver.Id) return Results.BadRequest(new { error = "Trip is not assigned to this driver." });
+            if (trip.Status != TripStatus.AwaitingLoad)
+                return Results.BadRequest(new { error = "This trip is no longer accepting scans at origin (driver has started or trip is closed)." });
+
+            var allowedDest = trip.Destinations.Select(d => d.BranchId).ToHashSet();
+            foreach (var p in products)
+            {
+                if (!allowedDest.Contains(p.DestinationBranchId))
+                    return Results.BadRequest(new { error = $"Product {p.TrackingNumber} is not destined for a branch allowed on this trip." });
+            }
+
+            foreach (var p in products)
+            {
+                await repo.AddAsync(new TripProduct { TripId = trip.Id, ProductId = p.Id }, ct);
+                p.Status = ProductStatus.InTransit;
+                p.CurrentBranchId = null;
+            }
+            await repo.SaveChangesAsync(ct);
+            await tx.CommitAsync(ct);
+            return Results.Ok(new TripLoadResponse(trip.Id));
+        }
+
+        var adHocTrip = new Trip
         {
             Id = Guid.NewGuid(),
             DriverProfileId = driver.Id,
             OriginBranchId = staffBranchId,
-            DestinationBranchId = destId,
             LoadTime = DateTime.UtcNow,
-            Status = TripStatus.Active
+            Status = TripStatus.Active,
+            DriverPaymentAmount = 0m,
+            EarningsCredited = false,
         };
-        await repo.AddAsync(trip, ct);
+        await repo.AddAsync(adHocTrip, ct);
+        foreach (var bid in products.Select(p => p.DestinationBranchId).Distinct())
+            await repo.AddAsync(new TripDestination { TripId = adHocTrip.Id, BranchId = bid }, ct);
         foreach (var p in products)
         {
-            await repo.AddAsync(new TripProduct { TripId = trip.Id, ProductId = p.Id }, ct);
+            await repo.AddAsync(new TripProduct { TripId = adHocTrip.Id, ProductId = p.Id }, ct);
             p.Status = ProductStatus.InTransit;
             p.CurrentBranchId = null;
         }
         await repo.SaveChangesAsync(ct);
         await tx.CommitAsync(ct);
-        return Results.Ok(new TripLoadResponse(trip.Id));
+        return Results.Ok(new TripLoadResponse(adHocTrip.Id));
     }
 
     public async Task<IResult> UnloadTripAsync(TripUnloadRequest body, ClaimsPrincipal principal, CancellationToken ct = default)
@@ -778,7 +1267,34 @@ public class TransportService(ITransportRepository repo, TokenService tokens) : 
             p.Status = ProductStatus.Downloaded;
         }
         await repo.SaveChangesAsync(ct);
+
+        var tripIds = await repo.TripProducts.AsNoTracking()
+            .Where(tp => body.ProductIds.Contains(tp.ProductId))
+            .Select(tp => tp.TripId)
+            .Distinct()
+            .ToListAsync(ct);
+        foreach (var tripId in tripIds)
+            await TryCompleteTripAndCreditEarningsAsync(tripId, ct);
+
         return Results.Ok(new { unloadedCount = products.Count });
+    }
+
+    private async Task TryCompleteTripAndCreditEarningsAsync(Guid tripId, CancellationToken ct)
+    {
+        var trip = await repo.Trips
+            .Include(t => t.TripProducts).ThenInclude(tp => tp.Product)
+            .Include(t => t.DriverProfile)
+            .FirstOrDefaultAsync(t => t.Id == tripId, ct);
+        if (trip is null || trip.Status == TripStatus.Completed || trip.EarningsCredited) return;
+        if (trip.TripProducts.Count == 0) return;
+        if (trip.TripProducts.Any(tp => tp.Product.Status == ProductStatus.InTransit)) return;
+
+        trip.Status = TripStatus.Completed;
+        var pay = RoundMoney(trip.DriverPaymentAmount);
+        if (pay > 0)
+            trip.DriverProfile.AccruedTripEarnings = RoundMoney(trip.DriverProfile.AccruedTripEarnings + pay);
+        trip.EarningsCredited = true;
+        await repo.SaveChangesAsync(ct);
     }
 
     public async Task<IResult> GetAppConfigurationAsync(string key, ClaimsPrincipal principal, CancellationToken ct = default)
@@ -822,6 +1338,9 @@ public class TransportService(ITransportRepository repo, TokenService tokens) : 
         await repo.SaveChangesAsync(ct);
         return Results.Ok(new AppConfigurationDto(config.ConfigKey, config.ConfigValue, config.UpdatedAt));
     }
+
+    private static decimal RoundMoney(decimal value) =>
+        decimal.Round(value, 2, MidpointRounding.AwayFromZero);
 
     private static bool ProductTouchesBranch(Product p, int bid) =>
         p.OriginBranchId == bid || p.DestinationBranchId == bid || p.CurrentBranchId == bid;

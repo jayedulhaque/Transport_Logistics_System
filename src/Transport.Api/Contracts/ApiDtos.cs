@@ -23,7 +23,8 @@ public record CreateProductRequest(
     string ReceiverAddress,
     int OriginBranchId,
     int DestinationBranchId,
-    decimal ShippingPrice);
+    decimal ShippingPrice,
+    decimal AmountReceivedAtOrigin);
 
 public record ProductCreatedResponse(Guid Id, string TrackingNumber, decimal ShippingPrice);
 
@@ -37,7 +38,8 @@ public record UpdateProductRequest(
     string ReceiverAddress,
     int OriginBranchId,
     int DestinationBranchId,
-    decimal ShippingPrice);
+    decimal ShippingPrice,
+    decimal AmountReceivedAtOrigin);
 
 public record ProductListItemDto(
     Guid Id,
@@ -54,6 +56,9 @@ public record ProductListItemDto(
     string OriginBranchName,
     string DestinationBranchName,
     decimal ShippingPrice,
+    decimal AmountReceivedAtOrigin,
+    decimal AmountReceivedAtDestination,
+    decimal DueAmount,
     string Status,
     DateTime CreatedAt);
 
@@ -91,6 +96,53 @@ public record DriverLivePositionDto(
 
 public record AvailableDriverDto(int DriverProfileId, string FullName, string VehicleNumber, bool IsOnline);
 
+/// <summary>Trips at the staff branch waiting for parcels to be loaded onto the vehicle.</summary>
+public record AvailableTripForStaffDto(
+    Guid TripId,
+    int DriverProfileId,
+    string FullName,
+    string VehicleNumber,
+    string DestinationBranchesLabel,
+    decimal DriverPaymentAmount);
+
+public record CreateTripRequest(int DriverProfileId, IReadOnlyList<int> DestinationBranchIds, decimal DriverPaymentAmount, int? OriginBranchId);
+
+public record UpdateTripRequest(int DriverProfileId, IReadOnlyList<int> DestinationBranchIds, decimal DriverPaymentAmount);
+
+public record TripListItemDto(
+    Guid Id,
+    int DriverProfileId,
+    string DriverName,
+    string VehicleNumber,
+    int OriginBranchId,
+    string OriginBranchName,
+    IReadOnlyList<int> DestinationBranchIds,
+    string DestinationBranchesLabel,
+    string Status,
+    decimal DriverPaymentAmount,
+    int ProductCount,
+    int InTransitCount,
+    DateTime LoadTime);
+
+public record DriverTripStateResponse(
+    string Phase,
+    Guid? TripId,
+    string? DestinationBranchesLabel,
+    decimal? DriverPaymentAmount,
+    int ProductCount);
+
+public record DriverEarningsRowDto(
+    int DriverProfileId,
+    string FullName,
+    string VehicleNumber,
+    int? BranchId,
+    string? BranchName,
+    decimal AccruedTripEarnings,
+    decimal PaidToDriver,
+    decimal Due);
+
+public record PayDriverEarningsRequest(decimal Amount);
+
 public record StaffListItemDto(
     int Id,
     string FullName,
@@ -113,18 +165,40 @@ public record PresenceRequest(bool IsOnline);
 
 public record LocationRequest(decimal Latitude, decimal Longitude);
 
-public record TripLoadRequest(int DriverProfileId, List<Guid> ProductIds);
+public record TripLoadRequest(Guid? TripId, int DriverProfileId, List<Guid> ProductIds);
 
 public record TripLoadResponse(Guid TripId);
 
 public record TripUnloadRequest(List<Guid> ProductIds);
 
-public record DeliverProductRequest(string ReceiverPhone, bool PaidBySender, bool PaymentReceivedAtBranch);
+public record DeliverProductRequest(string ReceiverPhone, decimal AmountReceivedAtDestination);
 
 public record DriverStatusResponse(bool IsApproved, int? DriverProfileId);
 
-/// <summary>Delivered shipment revenue attributed to the destination branch.</summary>
-public record BranchCollectionRowDto(int BranchId, string BranchName, decimal TotalCollection);
+/// <summary>
+/// Per branch: money collected when this branch was the booking (origin) branch plus when it was the destination branch,
+/// for shipments delivered in the report period (filtered by <c>DeliveredAt</c>).
+/// </summary>
+public record BranchCollectionRowDto(
+    int BranchId,
+    string BranchName,
+    decimal CollectedAsOrigin,
+    decimal CollectedAsDestination,
+    decimal TotalCollection);
+
+/// <summary>
+/// Pending products still at the sending (origin) branch, grouped by destination (routing priority: highest count first).
+/// </summary>
+public record BookingsByDestinationRowDto(
+    int DestinationBranchId,
+    string DestinationBranchName,
+    int ProductCount,
+    decimal TotalShippingPrice);
+
+public record BookingsByDestinationReportDto(
+    int OriginBranchId,
+    string OriginBranchName,
+    IReadOnlyList<BookingsByDestinationRowDto> Rows);
 
 public record AppConfigurationDto(string ConfigKey, string ConfigValue, DateTime UpdatedAt);
 

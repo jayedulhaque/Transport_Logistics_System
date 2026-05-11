@@ -10,6 +10,17 @@ namespace Transport.Api.Controllers;
 [Authorize]
 public class TripsController(ITransportService service) : ControllerBase
 {
+    [HttpPost]
+    public Task<IResult> Create([FromBody] CreateTripRequest body, CancellationToken ct) =>
+        service.CreateTripAsync(body, User, ct);
+
+    [HttpGet]
+    public Task<IResult> List(CancellationToken ct) => service.GetTripsAsync(User, ct);
+
+    [HttpPut("{id:guid}")]
+    public Task<IResult> Update(Guid id, [FromBody] UpdateTripRequest body, CancellationToken ct) =>
+        service.UpdateTripAsync(id, body, User, ct);
+
     [HttpPost("load")]
     public Task<IResult> Load([FromBody] TripLoadRequest body, CancellationToken ct) =>
         service.LoadTripAsync(body, User, ct);

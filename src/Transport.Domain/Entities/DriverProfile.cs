@@ -11,6 +11,9 @@ public class DriverProfile
     public bool IsOnline { get; set; }
     public DateTime? LastSeenAt { get; set; }
 
+    public decimal AccruedTripEarnings { get; set; }
+    public decimal PaidToDriver { get; set; }
+
     public User User { get; set; } = null!;
     public ICollection<Trip> Trips { get; set; } = new List<Trip>();
 }

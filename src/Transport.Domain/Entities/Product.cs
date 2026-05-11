@@ -21,6 +21,8 @@ public class Product
     public int? CurrentBranchId { get; set; }
 
     public decimal ShippingPrice { get; set; }
+    public decimal AmountReceivedAtOrigin { get; set; }
+    public decimal AmountReceivedAtDestination { get; set; }
 
     public ProductStatus Status { get; set; } = ProductStatus.Pending;
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;

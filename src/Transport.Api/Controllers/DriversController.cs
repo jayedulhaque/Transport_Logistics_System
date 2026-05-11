@@ -18,6 +18,13 @@ public class DriversController(ITransportService service, IHubContext<TransportH
     [HttpGet("approved")]
     public Task<IResult> Approved(CancellationToken ct) => service.GetApprovedDriversAsync(User, ct);
 
+    [HttpGet("earnings")]
+    public Task<IResult> Earnings(CancellationToken ct) => service.GetDriverEarningsAsync(User, ct);
+
+    [HttpPost("{id:int}/pay-earnings")]
+    public Task<IResult> PayEarnings(int id, [FromBody] PayDriverEarningsRequest body, CancellationToken ct) =>
+        service.PayDriverEarningsAsync(id, body, User, ct);
+
     [HttpPatch("{id:int}/branch")]
     public Task<IResult> UpdateBranch(int id, [FromBody] UpdateDriverBranchRequest body, CancellationToken ct) =>
         service.UpdateDriverBranchAsync(id, body, User, ct);
@@ -27,6 +34,12 @@ public class DriversController(ITransportService service, IHubContext<TransportH
 
     [HttpGet("me/status")]
     public Task<IResult> Status(CancellationToken ct) => service.GetDriverStatusAsync(User, ct);
+
+    [HttpGet("me/trip-state")]
+    public Task<IResult> TripState(CancellationToken ct) => service.GetDriverTripStateAsync(User, ct);
+
+    [HttpPost("me/trips/{tripId:guid}/start")]
+    public Task<IResult> StartMyTrip(Guid tripId, CancellationToken ct) => service.StartDriverTripAsync(tripId, User, ct);
 
     [HttpPatch("me/presence")]
     public Task<IResult> Presence([FromBody] PresenceRequest body, CancellationToken ct) =>
