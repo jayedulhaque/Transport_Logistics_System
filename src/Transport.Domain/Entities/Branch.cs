@@ -1,3 +1,5 @@
+using Transport.Domain.Enums;
+
 namespace Transport.Domain.Entities;
 
 public class Branch
@@ -6,8 +8,12 @@ public class Branch
     public string BranchName { get; set; } = string.Empty;
     public string Code { get; set; } = string.Empty;
     public string Address { get; set; } = string.Empty;
+    public BranchSettlementType SettlementType { get; set; } = BranchSettlementType.Normal;
+    /// <summary>Commission % on shipping price for deliveries at this branch (destination role only).</summary>
+    public decimal? CommissionPercent { get; set; }
 
     public ICollection<User> Users { get; set; } = new List<User>();
+    public ICollection<BranchSettlementPayment> SettlementPayments { get; set; } = new List<BranchSettlementPayment>();
     public ICollection<Product> ProductsAtBranch { get; set; } = new List<Product>();
     public ICollection<Product> OriginProducts { get; set; } = new List<Product>();
     public ICollection<Product> DestinationProducts { get; set; } = new List<Product>();

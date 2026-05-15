@@ -15,7 +15,15 @@ public class ProductsController(ITransportService service) : ControllerBase
         service.CreateProductAsync(body, User, ct);
 
     [HttpGet]
-    public Task<IResult> List(CancellationToken ct) => service.GetProductsAsync(User, ct);
+    public Task<IResult> List(
+        [FromQuery] string? tracking,
+        [FromQuery] string? phone,
+        CancellationToken ct) =>
+        service.GetProductsAsync(User, tracking, phone, ct);
+
+    [HttpGet("{id:guid}")]
+    public Task<IResult> Get(Guid id, CancellationToken ct) =>
+        service.GetProductDetailAsync(id, User, ct);
 
     [HttpPut("{id:guid}")]
     public Task<IResult> Update(Guid id, [FromBody] UpdateProductRequest body, CancellationToken ct) =>

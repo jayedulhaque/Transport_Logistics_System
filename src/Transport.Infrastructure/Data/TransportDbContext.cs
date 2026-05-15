@@ -14,6 +14,7 @@ public class TransportDbContext(DbContextOptions<TransportDbContext> options) : 
     public DbSet<Trip> Trips => Set<Trip>();
     public DbSet<TripProduct> TripProducts => Set<TripProduct>();
     public DbSet<TripDestination> TripDestinations => Set<TripDestination>();
+    public DbSet<BranchSettlementPayment> BranchSettlementPayments => Set<BranchSettlementPayment>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -42,6 +43,22 @@ public class TransportDbContext(DbContextOptions<TransportDbContext> options) : 
         modelBuilder.Entity<Branch>(entity =>
         {
             entity.HasIndex(b => b.Code).IsUnique();
+            entity.Property(b => b.SettlementType).HasConversion<string>();
+            entity.Property(b => b.CommissionPercent).HasPrecision(5, 2);
+        });
+
+        modelBuilder.Entity<BranchSettlementPayment>(entity =>
+        {
+            entity.Property(p => p.Amount).HasPrecision(18, 2);
+            entity.Property(p => p.Direction).HasConversion<string>();
+            entity.HasOne(p => p.Branch)
+                .WithMany(b => b.SettlementPayments)
+                .HasForeignKey(p => p.BranchId)
+                .OnDelete(DeleteBehavior.Cascade);
+            entity.HasOne(p => p.RecordedBy)
+                .WithMany()
+                .HasForeignKey(p => p.RecordedByUserId)
+                .OnDelete(DeleteBehavior.Restrict);
         });
 
         modelBuilder.Entity<AppConfiguration>(entity =>

@@ -62,9 +62,80 @@ public record ProductListItemDto(
     string Status,
     DateTime CreatedAt);
 
-public record UpsertBranchRequest(string BranchName, string Code, string Address);
+public record ProductPartyDto(string Name, string Phone, string Address);
 
-public record BranchDto(int Id, string BranchName, string Code, string Address);
+public record ProductBranchManagerDto(string BranchName, string FullName, string Phone);
+
+public record ProductTripDetailDto(
+    Guid TripId,
+    string Status,
+    string DriverName,
+    string DriverPhone,
+    string VehicleNumber,
+    string OriginBranchName,
+    string DestinationBranchesLabel,
+    decimal DriverPaymentAmount,
+    DateTime LoadTime);
+
+public record ProductDetailDto(
+    Guid Id,
+    string TrackingNumber,
+    string Description,
+    string Status,
+    ProductPartyDto Sender,
+    ProductPartyDto Receiver,
+    string OriginBranchName,
+    string DestinationBranchName,
+    ProductBranchManagerDto? OriginBranchManager,
+    ProductBranchManagerDto? DestinationBranchManager,
+    ProductTripDetailDto? Trip,
+    decimal ShippingPrice,
+    decimal AmountReceivedAtOrigin,
+    decimal AmountReceivedAtDestination,
+    decimal DueAmount,
+    DateTime CreatedAt,
+    DateTime? DeliveredAt);
+
+public record UpsertBranchRequest(
+    string BranchName,
+    string Code,
+    string Address,
+    string SettlementType,
+    decimal? CommissionPercent);
+
+public record BranchDto(
+    int Id,
+    string BranchName,
+    string Code,
+    string Address,
+    string SettlementType,
+    decimal? CommissionPercent);
+
+public record BranchSettlementPaymentDto(
+    int Id,
+    decimal Amount,
+    string Direction,
+    string? Note,
+    DateTime CreatedAt,
+    string RecordedByName);
+
+public record BranchSettlementDto(
+    int BranchId,
+    string BranchName,
+    string SettlementType,
+    decimal? CommissionPercent,
+    decimal CollectedAsOrigin,
+    decimal CollectedAsDestination,
+    decimal DestinationShippingTotal,
+    decimal CommissionEarned,
+    decimal NetSettlement,
+    decimal PaidToAdmin,
+    decimal PaidFromAdmin,
+    decimal DueToAdmin,
+    decimal DueFromAdmin,
+    IReadOnlyList<BranchSettlementPaymentDto> RecentPayments);
+
+public record RecordBranchSettlementPaymentRequest(decimal Amount, string Direction, string? Note);
 
 public record PendingDriverDto(
     int Id,
@@ -141,6 +212,11 @@ public record DriverEarningsRowDto(
     decimal PaidToDriver,
     decimal Due);
 
+public record DriverMyEarningsDto(
+    decimal AccruedTripEarnings,
+    decimal PaidToDriver,
+    decimal Due);
+
 public record PayDriverEarningsRequest(decimal Amount);
 
 public record StaffListItemDto(
@@ -159,7 +235,17 @@ public record CreateBranchManagerRequest(string FullName, string Phone, string P
 
 public record UpdateBranchManagerRequest(string FullName, string Phone, int BranchId, bool IsActive);
 
-public record UpdateDriverBranchRequest(int BranchId);
+public record DriverProfileDto(
+    int DriverProfileId,
+    int UserId,
+    string FullName,
+    string Phone,
+    string VehicleNumber,
+    int? BranchId,
+    string? BranchName,
+    bool IsApproved);
+
+public record UpdateDriverRequest(string Phone, string VehicleNumber, int BranchId);
 
 public record PresenceRequest(bool IsOnline);
 

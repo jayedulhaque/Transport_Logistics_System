@@ -30,4 +30,14 @@ public class BranchesController(ITransportService service) : ControllerBase
     [Authorize]
     public Task<IResult> Delete(int id, CancellationToken ct) =>
         service.DeleteBranchAsync(id, User, ct);
+
+    [HttpGet("/api/branches/{id:int}/settlement")]
+    [Authorize]
+    public Task<IResult> GetSettlement(int id, [FromQuery] string? fromDate, [FromQuery] string? toDate, CancellationToken ct) =>
+        service.GetBranchSettlementAsync(id, fromDate, toDate, User, ct);
+
+    [HttpPost("/api/branches/{id:int}/settlement/payments")]
+    [Authorize]
+    public Task<IResult> RecordPayment(int id, [FromBody] RecordBranchSettlementPaymentRequest body, CancellationToken ct) =>
+        service.RecordBranchSettlementPaymentAsync(id, body, User, ct);
 }

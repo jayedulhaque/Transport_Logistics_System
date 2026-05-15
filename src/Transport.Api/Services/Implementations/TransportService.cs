@@ -6,6 +6,7 @@ using Transport.Api.Auth;
 using Transport.Api.Contracts;
 using Transport.Api.Hubs;
 using Transport.Api.Repositories.Interfaces;
+using Transport.Api.Services;
 using Transport.Api.Services.Interfaces;
 using Transport.Domain.Entities;
 using Transport.Domain.Enums;
@@ -18,7 +19,7 @@ public class TransportService(ITransportRepository repo, TokenService tokens) : 
     {
         var list = await repo.Branches.AsNoTracking()
             .OrderBy(b => b.Code)
-            .Select(b => new BranchDto(b.Id, b.BranchName, b.Code, b.Address))
+            .Select(b => new BranchDto(b.Id, b.BranchName, b.Code, b.Address, b.SettlementType.ToString(), b.CommissionPercent))
             .ToListAsync(ct);
         return Results.Ok(list);
     }
@@ -29,7 +30,7 @@ public class TransportService(ITransportRepository repo, TokenService tokens) : 
         {
             var list = await repo.Branches.AsNoTracking()
                 .OrderBy(b => b.Code)
-                .Select(b => new BranchDto(b.Id, b.BranchName, b.Code, b.Address))
+                .Select(b => new BranchDto(b.Id, b.BranchName, b.Code, b.Address, b.SettlementType.ToString(), b.CommissionPercent))
                 .ToListAsync(ct);
             return Results.Ok(list);
         }
@@ -42,7 +43,7 @@ public class TransportService(ITransportRepository repo, TokenService tokens) : 
 
             var row = await repo.Branches.AsNoTracking()
                 .Where(b => b.Id == branchId)
-                .Select(b => new BranchDto(b.Id, b.BranchName, b.Code, b.Address))
+                .Select(b => new BranchDto(b.Id, b.BranchName, b.Code, b.Address, b.SettlementType.ToString(), b.CommissionPercent))
                 .FirstOrDefaultAsync(ct);
             return row is null ? Results.NotFound() : Results.Ok(new List<BranchDto> { row });
         }
@@ -60,14 +61,27 @@ public class TransportService(ITransportRepository repo, TokenService tokens) : 
         if (string.IsNullOrWhiteSpace(name) || string.IsNullOrWhiteSpace(code))
             return Results.BadRequest(new { error = "Branch name and code are required." });
 
+        if (!TryParseSettlementType(body.SettlementType, out var settlementType, out var settlementError))
+            return Results.BadRequest(new { error = settlementError });
+
+        if (!TryValidateCommission(settlementType, body.CommissionPercent, out var commissionPercent, out var commissionError))
+            return Results.BadRequest(new { error = commissionError });
+
         if (await repo.Branches.AnyAsync(b => b.Code == code, ct))
             return Results.Conflict(new { error = "A branch with this code already exists." });
 
-        var branch = new Branch { BranchName = name, Code = code, Address = address };
+        var branch = new Branch
+        {
+            BranchName = name,
+            Code = code,
+            Address = address,
+            SettlementType = settlementType,
+            CommissionPercent = commissionPercent
+        };
         await repo.AddAsync(branch, ct);
         await repo.SaveChangesAsync(ct);
 
-        return Results.Created($"/api/branches/{branch.Id}", new BranchDto(branch.Id, branch.BranchName, branch.Code, branch.Address));
+        return Results.Created($"/api/branches/{branch.Id}", ToBranchDto(branch));
     }
 
     public async Task<IResult> UpdateBranchAsync(int id, UpsertBranchRequest body, ClaimsPrincipal principal, CancellationToken ct = default)
@@ -83,14 +97,183 @@ public class TransportService(ITransportRepository repo, TokenService tokens) : 
         if (string.IsNullOrWhiteSpace(name) || string.IsNullOrWhiteSpace(code))
             return Results.BadRequest(new { error = "Branch name and code are required." });
 
+        if (!TryParseSettlementType(body.SettlementType, out var settlementType, out var settlementError))
+            return Results.BadRequest(new { error = settlementError });
+
+        if (!TryValidateCommission(settlementType, body.CommissionPercent, out var commissionPercent, out var commissionError))
+            return Results.BadRequest(new { error = commissionError });
+
         if (await repo.Branches.AnyAsync(b => b.Code == code && b.Id != id, ct))
             return Results.Conflict(new { error = "A branch with this code already exists." });
 
         branch.BranchName = name;
         branch.Code = code;
         branch.Address = address;
+        branch.SettlementType = settlementType;
+        branch.CommissionPercent = commissionPercent;
         await repo.SaveChangesAsync(ct);
-        return Results.Ok(new BranchDto(branch.Id, branch.BranchName, branch.Code, branch.Address));
+        return Results.Ok(ToBranchDto(branch));
+    }
+
+    public async Task<IResult> GetBranchSettlementAsync(int branchId, string? fromDate, string? toDate, ClaimsPrincipal principal, CancellationToken ct = default)
+    {
+        if (!principal.IsInRole(nameof(UserRole.Admin)) && !principal.IsInRole(nameof(UserRole.BranchManager)))
+            return Results.Forbid();
+
+        if (principal.IsInRole(nameof(UserRole.BranchManager)))
+        {
+            var branchIdResult = TryGetBranchId(principal, "Branch manager must have a branch assigned.");
+            if (branchIdResult.error is not null) return branchIdResult.error;
+            if (branchIdResult.branchId!.Value != branchId)
+                return Results.Forbid();
+        }
+
+        var (startUtc, endUtcExclusive, rangeError) = TryParseReportDateRange(fromDate, toDate);
+        if (rangeError is not null) return rangeError;
+
+        var branch = await repo.Branches.AsNoTracking().FirstOrDefaultAsync(b => b.Id == branchId, ct);
+        if (branch is null) return Results.NotFound();
+
+        var delivered = repo.Products.AsNoTracking()
+            .Where(p => p.Status == ProductStatus.Delivered
+                        && p.DeliveredAt != null
+                        && (!startUtc.HasValue || p.DeliveredAt >= startUtc.Value)
+                        && (!endUtcExclusive.HasValue || p.DeliveredAt < endUtcExclusive.Value));
+
+        var collectedAsOrigin = await delivered
+            .Where(p => p.OriginBranchId == branchId)
+            .SumAsync(p => (decimal?)p.AmountReceivedAtOrigin, ct) ?? 0m;
+
+        var collectedAsDestination = await delivered
+            .Where(p => p.DestinationBranchId == branchId)
+            .SumAsync(p => (decimal?)p.AmountReceivedAtDestination, ct) ?? 0m;
+
+        var destinationShippingTotal = await delivered
+            .Where(p => p.DestinationBranchId == branchId)
+            .SumAsync(p => (decimal?)p.ShippingPrice, ct) ?? 0m;
+
+        var (origin, dest, shipping, commissionEarned, netSettlement) = BranchSettlementCalculator.Compute(
+            branch.SettlementType,
+            branch.CommissionPercent,
+            collectedAsOrigin,
+            collectedAsDestination,
+            destinationShippingTotal);
+
+        var paidToAdmin = await repo.BranchSettlementPayments.AsNoTracking()
+            .Where(p => p.BranchId == branchId && p.Direction == BranchSettlementDirection.ToAdmin)
+            .SumAsync(p => (decimal?)p.Amount, ct) ?? 0m;
+
+        var paidFromAdmin = await repo.BranchSettlementPayments.AsNoTracking()
+            .Where(p => p.BranchId == branchId && p.Direction == BranchSettlementDirection.FromAdmin)
+            .SumAsync(p => (decimal?)p.Amount, ct) ?? 0m;
+
+        var (dueToAdmin, dueFromAdmin) = BranchSettlementCalculator.ComputeBalances(netSettlement, paidToAdmin, paidFromAdmin);
+
+        var recentPayments = await repo.BranchSettlementPayments.AsNoTracking()
+            .Where(p => p.BranchId == branchId)
+            .OrderByDescending(p => p.CreatedAt)
+            .Take(20)
+            .Select(p => new BranchSettlementPaymentDto(
+                p.Id,
+                p.Amount,
+                p.Direction.ToString(),
+                p.Note,
+                p.CreatedAt,
+                p.RecordedBy.FullName))
+            .ToListAsync(ct);
+
+        return Results.Ok(new BranchSettlementDto(
+            branch.Id,
+            branch.BranchName,
+            branch.SettlementType.ToString(),
+            branch.CommissionPercent,
+            origin,
+            dest,
+            shipping,
+            commissionEarned,
+            netSettlement,
+            paidToAdmin,
+            paidFromAdmin,
+            dueToAdmin,
+            dueFromAdmin,
+            recentPayments));
+    }
+
+    public async Task<IResult> RecordBranchSettlementPaymentAsync(
+        int branchId,
+        RecordBranchSettlementPaymentRequest body,
+        ClaimsPrincipal principal,
+        CancellationToken ct = default)
+    {
+        if (!principal.IsInRole(nameof(UserRole.Admin)) && !principal.IsInRole(nameof(UserRole.BranchManager)))
+            return Results.Forbid();
+
+        if (principal.IsInRole(nameof(UserRole.BranchManager)))
+        {
+            var branchIdResult = TryGetBranchId(principal, "Branch manager must have a branch assigned.");
+            if (branchIdResult.error is not null) return branchIdResult.error;
+            if (branchIdResult.branchId!.Value != branchId)
+                return Results.Forbid();
+        }
+
+        if (body.Amount <= 0)
+            return Results.BadRequest(new { error = "Payment amount must be greater than zero." });
+
+        if (!Enum.TryParse<BranchSettlementDirection>(body.Direction?.Trim(), true, out var direction)
+            || direction is not (BranchSettlementDirection.ToAdmin or BranchSettlementDirection.FromAdmin))
+            return Results.BadRequest(new { error = "Direction must be ToAdmin or FromAdmin." });
+
+        if (principal.IsInRole(nameof(UserRole.BranchManager)) && direction != BranchSettlementDirection.ToAdmin)
+            return Results.Forbid();
+
+        var branch = await repo.Branches.AsNoTracking().FirstOrDefaultAsync(b => b.Id == branchId, ct);
+        if (branch is null) return Results.NotFound();
+
+        var delivered = repo.Products.AsNoTracking()
+            .Where(p => p.Status == ProductStatus.Delivered && p.DeliveredAt != null);
+
+        var collectedAsOrigin = await delivered.Where(p => p.OriginBranchId == branchId)
+            .SumAsync(p => (decimal?)p.AmountReceivedAtOrigin, ct) ?? 0m;
+        var collectedAsDestination = await delivered.Where(p => p.DestinationBranchId == branchId)
+            .SumAsync(p => (decimal?)p.AmountReceivedAtDestination, ct) ?? 0m;
+        var destinationShippingTotal = await delivered.Where(p => p.DestinationBranchId == branchId)
+            .SumAsync(p => (decimal?)p.ShippingPrice, ct) ?? 0m;
+
+        var (_, _, _, _, netSettlement) = BranchSettlementCalculator.Compute(
+            branch.SettlementType,
+            branch.CommissionPercent,
+            collectedAsOrigin,
+            collectedAsDestination,
+            destinationShippingTotal);
+
+        var paidToAdmin = await repo.BranchSettlementPayments.AsNoTracking()
+            .Where(p => p.BranchId == branchId && p.Direction == BranchSettlementDirection.ToAdmin)
+            .SumAsync(p => (decimal?)p.Amount, ct) ?? 0m;
+        var paidFromAdmin = await repo.BranchSettlementPayments.AsNoTracking()
+            .Where(p => p.BranchId == branchId && p.Direction == BranchSettlementDirection.FromAdmin)
+            .SumAsync(p => (decimal?)p.Amount, ct) ?? 0m;
+
+        var (dueToAdmin, dueFromAdmin) = BranchSettlementCalculator.ComputeBalances(netSettlement, paidToAdmin, paidFromAdmin);
+
+        if (direction == BranchSettlementDirection.ToAdmin && body.Amount > dueToAdmin + 0.01m)
+            return Results.BadRequest(new { error = "Payment exceeds amount due to admin." });
+        if (direction == BranchSettlementDirection.FromAdmin && body.Amount > dueFromAdmin + 0.01m)
+            return Results.BadRequest(new { error = "Payment exceeds amount due from admin." });
+
+        var payment = new BranchSettlementPayment
+        {
+            BranchId = branchId,
+            Amount = Math.Round(body.Amount, 2, MidpointRounding.AwayFromZero),
+            Direction = direction,
+            Note = string.IsNullOrWhiteSpace(body.Note) ? null : body.Note.Trim(),
+            CreatedAt = DateTime.UtcNow,
+            RecordedByUserId = GetUserId(principal)
+        };
+
+        await repo.AddAsync(payment, ct);
+        await repo.SaveChangesAsync(ct);
+
+        return await GetBranchSettlementAsync(branchId, null, null, principal, ct);
     }
 
     public async Task<IResult> DeleteBranchAsync(int id, ClaimsPrincipal principal, CancellationToken ct = default)
@@ -116,9 +299,10 @@ public class TransportService(ITransportRepository repo, TokenService tokens) : 
 
     public async Task<IResult> LoginAsync(LoginRequest body, CancellationToken ct = default)
     {
+        var loginPhone = PhoneValidation.PhoneForLoginLookup(body.Phone);
         var user = await repo.Users
             .Include(u => u.DriverProfile)
-            .FirstOrDefaultAsync(u => u.Phone == body.Phone && u.IsActive, ct);
+            .FirstOrDefaultAsync(u => u.Phone == loginPhone && u.IsActive, ct);
         if (user?.PasswordHash is null || !BCrypt.Net.BCrypt.Verify(body.Password, user.PasswordHash))
             return Results.Unauthorized();
 
@@ -130,15 +314,25 @@ public class TransportService(ITransportRepository repo, TokenService tokens) : 
 
     public async Task<IResult> RegisterDriverAsync(RegisterDriverRequest body, CancellationToken ct = default)
     {
-        if (await repo.Users.AnyAsync(u => u.Phone == body.Phone, ct))
-            return Results.Conflict(new { error = "Phone already registered." });
+        var fullName = body.FullName.Trim();
+        if (string.IsNullOrWhiteSpace(fullName))
+            return Results.BadRequest(new { error = "Full name is required." });
+        if (!PhoneValidation.TryValidateMobile(body.Phone, out var phone, out var phoneError))
+            return Results.BadRequest(new { error = phoneError });
+        var vehicle = body.VehicleNumber.Trim();
+        if (string.IsNullOrWhiteSpace(vehicle))
+            return Results.BadRequest(new { error = "Vehicle number is required." });
+        if (string.IsNullOrWhiteSpace(body.Password) || body.Password.Length < 6)
+            return Results.BadRequest(new { error = "Password must be at least 6 characters." });
+        if (await repo.Users.AnyAsync(u => u.Phone == phone, ct))
+            return Results.Conflict(new { error = "Mobile number already registered." });
         if (!await repo.Branches.AnyAsync(b => b.Id == body.BranchId, ct))
             return Results.BadRequest(new { error = "Invalid branch." });
 
         var user = new User
         {
-            FullName = body.FullName,
-            Phone = body.Phone,
+            FullName = fullName,
+            Phone = phone,
             PasswordHash = BCrypt.Net.BCrypt.HashPassword(body.Password),
             Role = UserRole.Driver,
             BranchId = body.BranchId,
@@ -150,7 +344,7 @@ public class TransportService(ITransportRepository repo, TokenService tokens) : 
         var profile = new DriverProfile
         {
             UserId = user.Id,
-            VehicleNumber = body.VehicleNumber,
+            VehicleNumber = vehicle,
             IsApproved = false,
             IsOnline = false,
             CurrentLat = 0,
@@ -382,16 +576,87 @@ public class TransportService(ITransportRepository repo, TokenService tokens) : 
         return Results.Forbid();
     }
 
-    public async Task<IResult> UpdateDriverBranchAsync(int id, UpdateDriverBranchRequest body, ClaimsPrincipal principal, CancellationToken ct = default)
+    public async Task<IResult> UpdateDriverAsync(int id, UpdateDriverRequest body, ClaimsPrincipal principal, CancellationToken ct = default)
     {
-        if (!principal.IsInRole(nameof(UserRole.Admin))) return Results.Forbid();
-        if (!await repo.Branches.AnyAsync(b => b.Id == body.BranchId, ct)) return Results.BadRequest(new { error = "Invalid branch." });
+        if (!principal.IsInRole(nameof(UserRole.Admin)) && !principal.IsInRole(nameof(UserRole.BranchManager)))
+            return Results.Forbid();
 
-        var profile = await repo.DriverProfiles.Include(d => d.User).FirstOrDefaultAsync(d => d.Id == id, ct);
+        var profile = await repo.DriverProfiles.Include(d => d.User).ThenInclude(u => u.Branch)
+            .FirstOrDefaultAsync(d => d.Id == id, ct);
         if (profile is null) return Results.NotFound();
-        profile.User.BranchId = body.BranchId;
+
+        if (principal.IsInRole(nameof(UserRole.BranchManager)))
+        {
+            var branchIdResult = TryGetBranchId(principal, "Branch manager must have a branch assigned.");
+            if (branchIdResult.error is not null) return branchIdResult.error;
+            if (profile.User.BranchId != branchIdResult.branchId)
+                return Results.Forbid();
+        }
+
+        var updateResult = await ApplyDriverProfileUpdateAsync(profile, body, ct);
+        if (updateResult is not null) return updateResult;
+
         await repo.SaveChangesAsync(ct);
         return Results.NoContent();
+    }
+
+    public async Task<IResult> GetMyDriverProfileAsync(ClaimsPrincipal principal, CancellationToken ct = default)
+    {
+        if (!principal.IsInRole(nameof(UserRole.Driver))) return Results.Forbid();
+        var userId = GetUserId(principal);
+        var profile = await repo.DriverProfiles.AsNoTracking()
+            .Include(d => d.User).ThenInclude(u => u.Branch)
+            .FirstOrDefaultAsync(d => d.UserId == userId, ct);
+        if (profile is null) return Results.NotFound();
+        return Results.Ok(ToDriverProfileDto(profile));
+    }
+
+    public async Task<IResult> UpdateMyDriverProfileAsync(UpdateDriverRequest body, ClaimsPrincipal principal, CancellationToken ct = default)
+    {
+        if (!principal.IsInRole(nameof(UserRole.Driver))) return Results.Forbid();
+        var userId = GetUserId(principal);
+        var profile = await repo.DriverProfiles.Include(d => d.User).FirstOrDefaultAsync(d => d.UserId == userId, ct);
+        if (profile is null) return Results.NotFound();
+
+        var updateResult = await ApplyDriverProfileUpdateAsync(profile, body, ct);
+        if (updateResult is not null) return updateResult;
+
+        await repo.SaveChangesAsync(ct);
+        var updated = await repo.DriverProfiles.AsNoTracking()
+            .Include(d => d.User).ThenInclude(u => u.Branch)
+            .FirstAsync(d => d.Id == profile.Id, ct);
+        return Results.Ok(ToDriverProfileDto(updated));
+    }
+
+    static DriverProfileDto ToDriverProfileDto(DriverProfile profile) =>
+        new(
+            profile.Id,
+            profile.UserId,
+            profile.User.FullName,
+            profile.User.Phone,
+            profile.VehicleNumber,
+            profile.User.BranchId,
+            profile.User.Branch?.BranchName,
+            profile.IsApproved);
+
+    async Task<IResult?> ApplyDriverProfileUpdateAsync(DriverProfile profile, UpdateDriverRequest body, CancellationToken ct)
+    {
+        if (!PhoneValidation.TryValidateMobile(body.Phone, out var phone, out var phoneError))
+            return Results.BadRequest(new { error = phoneError });
+        var vehicle = body.VehicleNumber.Trim();
+        if (string.IsNullOrWhiteSpace(vehicle))
+            return Results.BadRequest(new { error = "Vehicle number is required." });
+        if (!await repo.Branches.AnyAsync(b => b.Id == body.BranchId, ct))
+            return Results.BadRequest(new { error = "Invalid branch." });
+
+        if (profile.User.Phone != phone &&
+            await repo.Users.AnyAsync(u => u.Phone == phone && u.Id != profile.UserId, ct))
+            return Results.Conflict(new { error = "Mobile number already registered." });
+
+        profile.User.Phone = phone;
+        profile.VehicleNumber = vehicle;
+        profile.User.BranchId = body.BranchId;
+        return null;
     }
 
     public async Task<IResult> ApproveDriverAsync(int id, ClaimsPrincipal principal, IHubContext<TransportHub> hub, CancellationToken ct = default)
@@ -946,6 +1211,18 @@ public class TransportService(ITransportRepository repo, TokenService tokens) : 
         return Results.Ok(rows);
     }
 
+    public async Task<IResult> GetMyDriverEarningsAsync(ClaimsPrincipal principal, CancellationToken ct = default)
+    {
+        if (!principal.IsInRole(nameof(UserRole.Driver))) return Results.Forbid();
+        var userId = GetUserId(principal);
+        var profile = await repo.DriverProfiles.AsNoTracking()
+            .FirstOrDefaultAsync(d => d.UserId == userId, ct);
+        if (profile is null) return Results.NotFound();
+        var accrued = RoundMoney(profile.AccruedTripEarnings);
+        var paid = RoundMoney(profile.PaidToDriver);
+        return Results.Ok(new DriverMyEarningsDto(accrued, paid, RoundMoney(accrued - paid)));
+    }
+
     public async Task<IResult> PayDriverEarningsAsync(int driverProfileId, PayDriverEarningsRequest body, ClaimsPrincipal principal, CancellationToken ct = default)
     {
         if (!principal.IsInRole(nameof(UserRole.Admin)) && !principal.IsInRole(nameof(UserRole.BranchManager))) return Results.Forbid();
@@ -1036,34 +1313,145 @@ public class TransportService(ITransportRepository repo, TokenService tokens) : 
         return Results.Ok(new ProductCreatedResponse(product.Id, product.TrackingNumber, product.ShippingPrice));
     }
 
-    public async Task<IResult> GetProductsAsync(ClaimsPrincipal principal, CancellationToken ct = default)
+    public async Task<IResult> GetProductsAsync(
+        ClaimsPrincipal principal,
+        string? tracking = null,
+        string? phone = null,
+        CancellationToken ct = default)
     {
-        if (principal.IsInRole(nameof(UserRole.Admin)))
-        {
-            var list = await (from p in repo.Products.AsNoTracking()
-                              join ob in repo.Branches.AsNoTracking() on p.OriginBranchId equals ob.Id
-                              join dbDest in repo.Branches.AsNoTracking() on p.DestinationBranchId equals dbDest.Id
-                              orderby p.CreatedAt descending
-                              select new ProductListItemDto(p.Id, p.TrackingNumber, p.Description, p.SenderName, p.SenderPhone, p.SenderAddress, p.ReceiverName, p.ReceiverPhone, p.ReceiverAddress, p.OriginBranchId, p.DestinationBranchId, ob.BranchName, dbDest.BranchName, p.ShippingPrice, p.AmountReceivedAtOrigin, p.AmountReceivedAtDestination, p.ShippingPrice - p.AmountReceivedAtOrigin - p.AmountReceivedAtDestination, p.Status.ToString(), p.CreatedAt))
-                .ToListAsync(ct);
-            return Results.Ok(list);
-        }
+        IQueryable<Product> query = repo.Products.AsNoTracking();
+
         if (principal.IsInRole(nameof(UserRole.BranchManager)))
         {
             var branchIdResult = TryGetBranchId(principal, "Branch manager must have a branch assigned.");
             if (branchIdResult.error is not null) return branchIdResult.error;
             var bid = branchIdResult.branchId!.Value;
-
-            var list = await (from p in repo.Products.AsNoTracking()
-                              where p.OriginBranchId == bid || p.DestinationBranchId == bid || p.CurrentBranchId == bid
-                              join ob in repo.Branches.AsNoTracking() on p.OriginBranchId equals ob.Id
-                              join dbDest in repo.Branches.AsNoTracking() on p.DestinationBranchId equals dbDest.Id
-                              orderby p.CreatedAt descending
-                              select new ProductListItemDto(p.Id, p.TrackingNumber, p.Description, p.SenderName, p.SenderPhone, p.SenderAddress, p.ReceiverName, p.ReceiverPhone, p.ReceiverAddress, p.OriginBranchId, p.DestinationBranchId, ob.BranchName, dbDest.BranchName, p.ShippingPrice, p.AmountReceivedAtOrigin, p.AmountReceivedAtDestination, p.ShippingPrice - p.AmountReceivedAtOrigin - p.AmountReceivedAtDestination, p.Status.ToString(), p.CreatedAt))
-                .ToListAsync(ct);
-            return Results.Ok(list);
+            query = query.Where(p => p.OriginBranchId == bid || p.DestinationBranchId == bid || p.CurrentBranchId == bid);
         }
-        return Results.Forbid();
+        else if (!principal.IsInRole(nameof(UserRole.Admin)))
+        {
+            return Results.Forbid();
+        }
+
+        var trackingTerm = tracking?.Trim();
+        if (!string.IsNullOrEmpty(trackingTerm))
+            query = query.Where(p => EF.Functions.ILike(p.TrackingNumber, $"%{trackingTerm}%"));
+
+        var phoneTerm = phone?.Trim();
+        if (!string.IsNullOrEmpty(phoneTerm))
+        {
+            query = query.Where(p =>
+                EF.Functions.ILike(p.SenderPhone, $"%{phoneTerm}%") ||
+                EF.Functions.ILike(p.ReceiverPhone, $"%{phoneTerm}%"));
+        }
+
+        var list = await (from p in query
+                          join ob in repo.Branches.AsNoTracking() on p.OriginBranchId equals ob.Id
+                          join dbDest in repo.Branches.AsNoTracking() on p.DestinationBranchId equals dbDest.Id
+                          orderby p.CreatedAt descending
+                          select new ProductListItemDto(
+                              p.Id,
+                              p.TrackingNumber,
+                              p.Description,
+                              p.SenderName,
+                              p.SenderPhone,
+                              p.SenderAddress,
+                              p.ReceiverName,
+                              p.ReceiverPhone,
+                              p.ReceiverAddress,
+                              p.OriginBranchId,
+                              p.DestinationBranchId,
+                              ob.BranchName,
+                              dbDest.BranchName,
+                              p.ShippingPrice,
+                              p.AmountReceivedAtOrigin,
+                              p.AmountReceivedAtDestination,
+                              p.ShippingPrice - p.AmountReceivedAtOrigin - p.AmountReceivedAtDestination,
+                              p.Status.ToString(),
+                              p.CreatedAt))
+            .ToListAsync(ct);
+        return Results.Ok(list);
+    }
+
+    public async Task<IResult> GetProductDetailAsync(Guid id, ClaimsPrincipal principal, CancellationToken ct = default)
+    {
+        if (!principal.IsInRole(nameof(UserRole.Admin)) && !principal.IsInRole(nameof(UserRole.BranchManager)))
+            return Results.Forbid();
+
+        var product = await repo.Products.AsNoTracking()
+            .Include(p => p.OriginBranch)
+            .Include(p => p.DestinationBranch)
+            .FirstOrDefaultAsync(p => p.Id == id, ct);
+        if (product is null) return Results.NotFound();
+
+        if (principal.IsInRole(nameof(UserRole.BranchManager)))
+        {
+            var branchIdResult = TryGetBranchId(principal, "Branch manager must have a branch assigned.");
+            if (branchIdResult.error is not null) return branchIdResult.error;
+            if (!ProductTouchesBranch(product, branchIdResult.branchId!.Value)) return Results.Forbid();
+        }
+
+        var originMgr = await GetBranchManagerContactAsync(product.OriginBranchId, product.OriginBranch.BranchName, ct);
+        var destMgr = await GetBranchManagerContactAsync(product.DestinationBranchId, product.DestinationBranch.BranchName, ct);
+
+        ProductTripDetailDto? tripDto = null;
+        var tripId = await (from tp in repo.TripProducts.AsNoTracking()
+                            where tp.ProductId == id
+                            join t in repo.Trips.AsNoTracking() on tp.TripId equals t.Id
+                            orderby t.LoadTime descending
+                            select t.Id).FirstOrDefaultAsync(ct);
+        if (tripId != Guid.Empty)
+        {
+            var trip = await repo.Trips.AsNoTracking()
+                .Include(t => t.DriverProfile).ThenInclude(d => d.User)
+                .Include(t => t.OriginBranch)
+                .Include(t => t.Destinations).ThenInclude(d => d.Branch)
+                .FirstOrDefaultAsync(t => t.Id == tripId, ct);
+            if (trip is not null)
+            {
+                var destLabel = string.Join(", ",
+                    trip.Destinations.OrderBy(d => d.Branch.BranchName).Select(d => d.Branch.BranchName));
+                tripDto = new ProductTripDetailDto(
+                    trip.Id,
+                    trip.Status.ToString(),
+                    trip.DriverProfile.User.FullName,
+                    trip.DriverProfile.User.Phone,
+                    trip.DriverProfile.VehicleNumber,
+                    trip.OriginBranch.BranchName,
+                    destLabel,
+                    trip.DriverPaymentAmount,
+                    trip.LoadTime);
+            }
+        }
+
+        var due = RoundMoney(product.ShippingPrice - product.AmountReceivedAtOrigin - product.AmountReceivedAtDestination);
+        return Results.Ok(new ProductDetailDto(
+            product.Id,
+            product.TrackingNumber,
+            product.Description,
+            product.Status.ToString(),
+            new ProductPartyDto(product.SenderName, product.SenderPhone, product.SenderAddress),
+            new ProductPartyDto(product.ReceiverName, product.ReceiverPhone, product.ReceiverAddress),
+            product.OriginBranch.BranchName,
+            product.DestinationBranch.BranchName,
+            originMgr,
+            destMgr,
+            tripDto,
+            product.ShippingPrice,
+            product.AmountReceivedAtOrigin,
+            product.AmountReceivedAtDestination,
+            due,
+            product.CreatedAt,
+            product.DeliveredAt));
+    }
+
+    async Task<ProductBranchManagerDto?> GetBranchManagerContactAsync(int branchId, string branchName, CancellationToken ct)
+    {
+        var mgr = await repo.Users.AsNoTracking()
+            .FirstOrDefaultAsync(
+                u => u.Role == UserRole.BranchManager && u.BranchId == branchId && u.IsActive,
+                ct);
+        return mgr is null ? null : new ProductBranchManagerDto(branchName, mgr.FullName, mgr.Phone);
     }
 
     public async Task<IResult> UpdateProductAsync(Guid id, UpdateProductRequest body, ClaimsPrincipal principal, CancellationToken ct = default)
@@ -1360,5 +1748,81 @@ public class TransportService(ITransportRepository repo, TokenService tokens) : 
         if (string.IsNullOrEmpty(id) || !int.TryParse(id, out var userId))
             throw new InvalidOperationException("Invalid user id claim.");
         return userId;
+    }
+
+    private static BranchDto ToBranchDto(Branch branch) =>
+        new(branch.Id, branch.BranchName, branch.Code, branch.Address, branch.SettlementType.ToString(), branch.CommissionPercent);
+
+    private static bool TryParseSettlementType(string? value, out BranchSettlementType type, out string? error)
+    {
+        error = null;
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            type = BranchSettlementType.Normal;
+            return true;
+        }
+
+        if (!Enum.TryParse(value.Trim(), true, out type) || !Enum.IsDefined(type))
+        {
+            error = "Settlement type must be Normal or Commission.";
+            return false;
+        }
+
+        return true;
+    }
+
+    private static bool TryValidateCommission(
+        BranchSettlementType type,
+        decimal? commissionPercent,
+        out decimal? normalized,
+        out string? error)
+    {
+        error = null;
+        normalized = null;
+
+        if (type == BranchSettlementType.Normal)
+        {
+            if (commissionPercent is > 0)
+            {
+                error = "Commission percent is only for commission-based branches.";
+                return false;
+            }
+
+            return true;
+        }
+
+        if (commissionPercent is null or <= 0 or > 100)
+        {
+            error = "Commission percent is required for commission branches (0.01–100).";
+            return false;
+        }
+
+        normalized = Math.Round(commissionPercent.Value, 2, MidpointRounding.AwayFromZero);
+        return true;
+    }
+
+    private static (DateTime? StartUtc, DateTime? EndUtcExclusive, IResult? Error) TryParseReportDateRange(string? fromDate, string? toDate)
+    {
+        DateTime? startUtc = null;
+        DateTime? endUtcExclusive = null;
+
+        if (!string.IsNullOrWhiteSpace(fromDate))
+        {
+            if (!DateOnly.TryParse(fromDate, out var from))
+                return (null, null, Results.BadRequest(new { error = "Invalid fromDate. Use YYYY-MM-DD." }));
+            startUtc = from.ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc);
+        }
+
+        if (!string.IsNullOrWhiteSpace(toDate))
+        {
+            if (!DateOnly.TryParse(toDate, out var to))
+                return (null, null, Results.BadRequest(new { error = "Invalid toDate. Use YYYY-MM-DD." }));
+            endUtcExclusive = to.AddDays(1).ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc);
+        }
+
+        if (startUtc.HasValue && endUtcExclusive.HasValue && startUtc.Value >= endUtcExclusive.Value)
+            return (null, null, Results.BadRequest(new { error = "fromDate must be before or equal to toDate." }));
+
+        return (startUtc, endUtcExclusive, null);
     }
 }

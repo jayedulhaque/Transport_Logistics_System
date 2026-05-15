@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+﻿import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   BrowserRouter,
   Link,
@@ -24,6 +24,7 @@ import {
   Package,
   Pencil,
   Printer,
+  Search,
   Settings,
   Trash2,
   Truck,
@@ -39,7 +40,7 @@ import shadow from 'leaflet/dist/images/marker-shadow.png'
 import { MapContainer, Marker as LeafletMarker, Popup, TileLayer, useMap } from 'react-leaflet'
 import { apiFetch, getToken, signalrBase } from './api'
 
-/** Two-decimal display; dampens binary float noise from JSON (e.g. 399.99999999994 → "400.00"). */
+/** Two-decimal display; dampens binary float noise from JSON (e.g. 399.99999999994 â†’ "400.00"). */
 function formatMoneyDisplay(value: number): string {
   if (!Number.isFinite(value)) return '0.00'
   return (Math.round(value * 100) / 100).toFixed(2)
@@ -72,6 +73,21 @@ type PendingDriver = {
 
 type ApprovedDriver = PendingDriver & { isOnline: boolean }
 
+type DriverEditFields = {
+  phone: string
+  vehicleNumber: string
+  branchId: number
+}
+
+function normalizeMobile(input: string): string {
+  return input.replace(/\D/g, '')
+}
+
+function isValidMobile(input: string): boolean {
+  const n = normalizeMobile(input)
+  return n.length >= 9 && n.length <= 15
+}
+
 type StaffRow = {
   id: number
   fullName: string
@@ -96,6 +112,32 @@ type Branch = {
   branchName: string
   code: string
   address: string
+  settlementType: string
+  commissionPercent: number | null
+}
+
+type BranchSettlement = {
+  branchId: number
+  branchName: string
+  settlementType: string
+  commissionPercent: number | null
+  collectedAsOrigin: number
+  collectedAsDestination: number
+  destinationShippingTotal: number
+  commissionEarned: number
+  netSettlement: number
+  paidToAdmin: number
+  paidFromAdmin: number
+  dueToAdmin: number
+  dueFromAdmin: number
+  recentPayments: {
+    id: number
+    amount: number
+    direction: string
+    note: string | null
+    createdAt: string
+    recordedByName: string
+  }[]
 }
 
 type ProductRow = {
@@ -118,6 +160,36 @@ type ProductRow = {
   dueAmount: number
   status: string
   createdAt: string
+}
+
+type ProductDetail = {
+  id: string
+  trackingNumber: string
+  description: string
+  status: string
+  sender: { name: string; phone: string; address: string }
+  receiver: { name: string; phone: string; address: string }
+  originBranchName: string
+  destinationBranchName: string
+  originBranchManager: { branchName: string; fullName: string; phone: string } | null
+  destinationBranchManager: { branchName: string; fullName: string; phone: string } | null
+  trip: {
+    tripId: string
+    status: string
+    driverName: string
+    driverPhone: string
+    vehicleNumber: string
+    originBranchName: string
+    destinationBranchesLabel: string
+    driverPaymentAmount: number
+    loadTime: string
+  } | null
+  shippingPrice: number
+  amountReceivedAtOrigin: number
+  amountReceivedAtDestination: number
+  dueAmount: number
+  createdAt: string
+  deliveredAt: string | null
 }
 
 type PaymentBadge = {
@@ -246,7 +318,7 @@ function LoginPage() {
           Sign in
         </button>
         <p className="mt-4 text-center text-xs text-slate-500">
-          Defaults: admin / Admin123! · branchmanager / Manager123!
+          Defaults: admin / Admin123! Â· branchmanager / Manager123!
         </p>
       </form>
     </div>
@@ -344,21 +416,22 @@ function ApprovalsPage() {
   const [approved, setApproved] = useState<ApprovedDriver[]>([])
   const [branches, setBranches] = useState<Branch[]>([])
   const [loading, setLoading] = useState(true)
-  const [driverBranch, setDriverBranch] = useState<Record<number, number>>({})
+  const [driverEdits, setDriverEdits] = useState<Record<number, DriverEditFields>>({})
   const [savingDriverId, setSavingDriverId] = useState<number | null>(null)
   const [error, setError] = useState<string | null>(null)
 
   const load = useCallback(async () => {
     setLoading(true)
     setError(null)
-    const admin = localStorage.getItem('transport_role') === 'Admin'
-    const pendingRes = await apiFetch('/api/drivers/pending')
-    const approvedRes = await apiFetch('/api/drivers/approved')
-    const branchesRes = admin ? await apiFetch('/api/branches') : null
+    const [pendingRes, approvedRes, branchesRes] = await Promise.all([
+      apiFetch('/api/drivers/pending'),
+      apiFetch('/api/drivers/approved'),
+      apiFetch('/api/branches'),
+    ])
     if (pendingRes.ok) setRows(await pendingRes.json())
     if (approvedRes.ok) setApproved(await approvedRes.json())
-    if (branchesRes?.ok) setBranches(await branchesRes.json())
-    else if (!admin) setBranches([])
+    if (branchesRes.ok) setBranches(await branchesRes.json())
+    setDriverEdits({})
     setLoading(false)
   }, [])
 
@@ -376,19 +449,52 @@ function ApprovalsPage() {
     await load()
   }
 
-  const updateDriverBranch = async (id: number, fallbackBranchId: number | null) => {
-    const branchId = driverBranch[id] ?? fallbackBranchId
-    if (!branchId) return
-    setSavingDriverId(id)
+  const getDriverEdit = (r: PendingDriver): DriverEditFields =>
+    driverEdits[r.id] ?? {
+      phone: r.phone,
+      vehicleNumber: r.vehicleNumber,
+      branchId: r.branchId ?? branches[0]?.id ?? 0,
+    }
+
+  const patchDriverEdit = (id: number, r: PendingDriver, patch: Partial<DriverEditFields>) => {
+    setDriverEdits((prev) => {
+      const current = prev[id] ?? {
+        phone: r.phone,
+        vehicleNumber: r.vehicleNumber,
+        branchId: r.branchId ?? branches[0]?.id ?? 0,
+      }
+      return { ...prev, [id]: { ...current, ...patch } }
+    })
+  }
+
+  const saveDriver = async (r: PendingDriver) => {
+    const e = driverEdits[r.id] ?? getDriverEdit(r)
+    if (!isValidMobile(e.phone)) {
+      setError('Enter a valid mobile number (9â€“15 digits).')
+      return
+    }
+    if (!e.vehicleNumber.trim()) {
+      setError('Vehicle number is required.')
+      return
+    }
+    if (!e.branchId) {
+      setError('Select a branch.')
+      return
+    }
+    setSavingDriverId(r.id)
     setError(null)
-    const res = await apiFetch(`/api/drivers/${id}/branch`, {
+    const res = await apiFetch(`/api/drivers/${r.id}`, {
       method: 'PATCH',
-      body: JSON.stringify({ branchId }),
+      body: JSON.stringify({
+        phone: normalizeMobile(e.phone),
+        vehicleNumber: e.vehicleNumber.trim(),
+        branchId: e.branchId,
+      }),
     })
     setSavingDriverId(null)
     if (!res.ok) {
       const j = await res.json().catch(() => ({}))
-      setError((j as { error?: string }).error ?? 'Could not update driver branch.')
+      setError((j as { error?: string }).error ?? 'Could not save driver.')
       return
     }
     await load()
@@ -400,7 +506,7 @@ function ApprovalsPage() {
     </option>
   ))
 
-  if (loading) return <p className="text-slate-400">Loading…</p>
+  if (loading) return <p className="text-slate-400">Loadingâ€¦</p>
 
   return (
     <div className="space-y-10">
@@ -421,30 +527,65 @@ function ApprovalsPage() {
             <thead className="bg-slate-900 text-slate-400">
               <tr>
                 <th className="px-4 py-3">Name</th>
-                <th className="px-4 py-3">Phone</th>
+                <th className="px-4 py-3">Mobile</th>
                 <th className="px-4 py-3">Vehicle</th>
                 <th className="px-4 py-3">Branch</th>
-                <th className="px-4 py-3"></th>
+                <th className="px-4 py-3 text-right">Actions</th>
               </tr>
             </thead>
             <tbody>
-              {rows.map((r) => (
+              {rows.map((r) => {
+                const e = getDriverEdit(r)
+                return (
                 <tr key={r.id} className="border-t border-slate-800">
                   <td className="px-4 py-3">{r.fullName}</td>
-                  <td className="px-4 py-3">{r.phone}</td>
-                  <td className="px-4 py-3">{r.vehicleNumber}</td>
-                  <td className="px-4 py-3 text-slate-300">{r.branchName ?? '—'}</td>
-                  <td className="px-4 py-3 text-right">
-                    <button
-                      type="button"
-                      onClick={() => void approve(r.id)}
-                      className="inline-flex items-center gap-1 rounded-lg bg-emerald-600 px-3 py-1 text-white hover:bg-emerald-500"
+                  <td className="px-4 py-3">
+                    <input
+                      type="tel"
+                      className="w-full min-w-[120px] rounded-lg border border-slate-700 bg-slate-950 px-2 py-1 text-sm text-white"
+                      value={e.phone}
+                      onChange={(ev) => patchDriverEdit(r.id, r, { phone: ev.target.value })}
+                    />
+                  </td>
+                  <td className="px-4 py-3">
+                    <input
+                      className="w-full min-w-[100px] rounded-lg border border-slate-700 bg-slate-950 px-2 py-1 text-sm text-white"
+                      value={e.vehicleNumber}
+                      onChange={(ev) => patchDriverEdit(r.id, r, { vehicleNumber: ev.target.value })}
+                    />
+                  </td>
+                  <td className="px-4 py-3">
+                    <select
+                      className="rounded-lg border border-slate-700 bg-slate-950 px-2 py-1 text-sm text-white"
+                      value={e.branchId || ''}
+                      onChange={(ev) => patchDriverEdit(r.id, r, { branchId: Number(ev.target.value) })}
                     >
-                      <Check size={16} /> Approve
-                    </button>
+                      <option value="">Select branch</option>
+                      {branchOptions}
+                    </select>
+                  </td>
+                  <td className="px-4 py-3 text-right">
+                    <div className="inline-flex flex-wrap justify-end gap-2">
+                      <button
+                        type="button"
+                        disabled={savingDriverId === r.id}
+                        onClick={() => void saveDriver(r)}
+                        className="rounded-lg border border-violet-700/60 px-3 py-1 text-xs text-violet-200 hover:bg-violet-900/40 disabled:opacity-50"
+                      >
+                        {savingDriverId === r.id ? 'Saving…' : 'Save'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void approve(r.id)}
+                        className="inline-flex items-center gap-1 rounded-lg bg-emerald-600 px-3 py-1 text-white hover:bg-emerald-500"
+                      >
+                        <Check size={16} /> Approve
+                      </button>
+                    </div>
                   </td>
                 </tr>
-              ))}
+                )
+              })}
               {rows.length === 0 && (
                 <tr>
                   <td className="px-4 py-6 text-slate-500" colSpan={5}>
@@ -469,20 +610,44 @@ function ApprovalsPage() {
             <thead className="bg-slate-900 text-slate-400">
               <tr>
                 <th className="px-4 py-3">Name</th>
-                <th className="px-4 py-3">Phone</th>
+                <th className="px-4 py-3">Mobile</th>
                 <th className="px-4 py-3">Vehicle</th>
                 <th className="px-4 py-3">Branch</th>
                 <th className="px-4 py-3">Online</th>
-                {isAdmin && <th className="px-4 py-3 text-right">Update branch</th>}
+                <th className="px-4 py-3 text-right">Actions</th>
               </tr>
             </thead>
             <tbody>
-              {approved.map((r) => (
+              {approved.map((r) => {
+                const e = getDriverEdit(r)
+                return (
                 <tr key={r.id} className="border-t border-slate-800">
                   <td className="px-4 py-3">{r.fullName}</td>
-                  <td className="px-4 py-3">{r.phone}</td>
-                  <td className="px-4 py-3">{r.vehicleNumber}</td>
-                  <td className="px-4 py-3 text-slate-300">{r.branchName ?? '—'}</td>
+                  <td className="px-4 py-3">
+                    <input
+                      type="tel"
+                      className="w-full min-w-[120px] rounded-lg border border-slate-700 bg-slate-950 px-2 py-1 text-sm text-white"
+                      value={e.phone}
+                      onChange={(ev) => patchDriverEdit(r.id, r, { phone: ev.target.value })}
+                    />
+                  </td>
+                  <td className="px-4 py-3">
+                    <input
+                      className="w-full min-w-[100px] rounded-lg border border-slate-700 bg-slate-950 px-2 py-1 text-sm text-white"
+                      value={e.vehicleNumber}
+                      onChange={(ev) => patchDriverEdit(r.id, r, { vehicleNumber: ev.target.value })}
+                    />
+                  </td>
+                  <td className="px-4 py-3">
+                    <select
+                      className="rounded-lg border border-slate-700 bg-slate-950 px-2 py-1 text-sm text-white"
+                      value={e.branchId || ''}
+                      onChange={(ev) => patchDriverEdit(r.id, r, { branchId: Number(ev.target.value) })}
+                    >
+                      <option value="">Select branch</option>
+                      {branchOptions}
+                    </select>
+                  </td>
                   <td className="px-4 py-3">
                     {r.isOnline ? (
                       <span className="text-emerald-400">Yes</span>
@@ -490,38 +655,22 @@ function ApprovalsPage() {
                       <span className="text-slate-500">No</span>
                     )}
                   </td>
-                  {isAdmin && (
-                    <td className="px-4 py-3 text-right">
-                      <div className="inline-flex items-center gap-2">
-                        <select
-                          value={driverBranch[r.id] ?? r.branchId ?? ''}
-                          onChange={(e) =>
-                            setDriverBranch((prev) => ({
-                              ...prev,
-                              [r.id]: Number(e.target.value),
-                            }))
-                          }
-                          className="rounded-lg border border-slate-700 bg-slate-950 px-2 py-1 text-xs text-white"
-                        >
-                          <option value="">Select branch</option>
-                          {branchOptions}
-                        </select>
-                        <button
-                          type="button"
-                          disabled={savingDriverId === r.id}
-                          onClick={() => void updateDriverBranch(r.id, r.branchId)}
-                          className="rounded-lg border border-violet-700/60 px-2 py-1 text-xs text-violet-200 hover:bg-violet-900/40 disabled:opacity-50"
-                        >
-                          {savingDriverId === r.id ? 'Saving…' : 'Save'}
-                        </button>
-                      </div>
-                    </td>
-                  )}
+                  <td className="px-4 py-3 text-right">
+                    <button
+                      type="button"
+                      disabled={savingDriverId === r.id}
+                      onClick={() => void saveDriver(r)}
+                      className="rounded-lg border border-violet-700/60 px-3 py-1 text-xs text-violet-200 hover:bg-violet-900/40 disabled:opacity-50"
+                    >
+                      {savingDriverId === r.id ? 'Saving…' : 'Save'}
+                    </button>
+                  </td>
                 </tr>
-              ))}
+                )
+              })}
               {approved.length === 0 && (
                 <tr>
-                  <td className="px-4 py-6 text-slate-500" colSpan={isAdmin ? 6 : 5}>
+                  <td className="px-4 py-6 text-slate-500" colSpan={6}>
                     No approved drivers yet. Approve a driver above to see them here.
                   </td>
                 </tr>
@@ -529,6 +678,97 @@ function ApprovalsPage() {
             </tbody>
           </table>
         </div>
+      </div>
+    </div>
+  )
+}
+
+function BranchTable({
+  title,
+  description,
+  rows,
+  isAdmin,
+  selectedBranchId,
+  onSelectSettlement,
+  onEdit,
+  onRemove,
+}: {
+  title: string
+  description: string
+  rows: Branch[]
+  isAdmin: boolean
+  selectedBranchId: number | null
+  onSelectSettlement: (b: Branch) => void
+  onEdit: (b: Branch) => void
+  onRemove: (id: number) => void
+}) {
+  return (
+    <div className="mb-8">
+      <h3 className="mb-1 text-sm font-semibold text-violet-300">{title}</h3>
+      <p className="mb-3 text-xs text-slate-500">{description}</p>
+      <div className="overflow-hidden rounded-xl border border-slate-800">
+        <table className="w-full text-left text-sm">
+          <thead className="bg-slate-900 text-slate-400">
+            <tr>
+              <th className="px-4 py-3">Name</th>
+              <th className="px-4 py-3">Code</th>
+              <th className="px-4 py-3">Address</th>
+              <th className="px-4 py-3">Commission</th>
+              <th className="px-4 py-3"></th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((b) => (
+              <tr
+                key={b.id}
+                className={`border-t border-slate-800 ${selectedBranchId === b.id ? 'bg-violet-950/30' : ''}`}
+              >
+                <td className="px-4 py-3">{b.branchName}</td>
+                <td className="px-4 py-3 font-mono text-xs">{b.code}</td>
+                <td className="px-4 py-3 text-slate-300">{b.address}</td>
+                <td className="px-4 py-3 text-slate-300">
+                  {b.settlementType === 'Commission' && b.commissionPercent != null
+                    ? `${b.commissionPercent}%`
+                    : '—'}
+                </td>
+                <td className="px-4 py-3 text-right whitespace-nowrap">
+                  <button
+                    type="button"
+                    onClick={() => onSelectSettlement(b)}
+                    className="mr-2 rounded-lg border border-violet-700/60 px-2 py-1 text-violet-300 hover:bg-violet-950/50"
+                  >
+                    Settlement
+                  </button>
+                  {isAdmin && (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => onEdit(b)}
+                        className="mr-2 inline-flex items-center gap-1 rounded-lg border border-slate-600 px-2 py-1 text-slate-300 hover:bg-slate-800"
+                      >
+                        <Pencil size={14} /> Edit
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void onRemove(b.id)}
+                        className="inline-flex items-center gap-1 rounded-lg border border-red-900/50 px-2 py-1 text-red-400 hover:bg-red-950/40"
+                      >
+                        <Trash2 size={14} /> Delete
+                      </button>
+                    </>
+                  )}
+                </td>
+              </tr>
+            ))}
+            {rows.length === 0 && (
+              <tr>
+                <td className="px-4 py-6 text-slate-500" colSpan={5}>
+                  No branches in this category.
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
       </div>
     </div>
   )
@@ -543,30 +783,81 @@ function BranchesPage() {
   const [formName, setFormName] = useState('')
   const [formCode, setFormCode] = useState('')
   const [formAddress, setFormAddress] = useState('')
+  const [formSettlementType, setFormSettlementType] = useState<'Normal' | 'Commission'>('Normal')
+  const [formCommissionPercent, setFormCommissionPercent] = useState('')
   const [editingId, setEditingId] = useState<number | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
+  const [selectedBranchId, setSelectedBranchId] = useState<number | null>(null)
+  const [settlementFrom, setSettlementFrom] = useState('')
+  const [settlementTo, setSettlementTo] = useState('')
+  const [settlement, setSettlement] = useState<BranchSettlement | null>(null)
+  const [settlementLoading, setSettlementLoading] = useState(false)
+  const [settlementError, setSettlementError] = useState<string | null>(null)
+  const [payAmount, setPayAmount] = useState('')
+  const [payDirection, setPayDirection] = useState<'ToAdmin' | 'FromAdmin'>('ToAdmin')
+  const [payNote, setPayNote] = useState('')
+  const [paySaving, setPaySaving] = useState(false)
 
   const load = useCallback(async () => {
     setLoading(true)
     const res = await apiFetch('/api/branches')
-    if (res.ok) setBranches(await res.json())
+    if (res.ok) {
+      const list: Branch[] = await res.json()
+      setBranches(list)
+      if (!isAdmin && list.length === 1) setSelectedBranchId(list[0].id)
+    }
     setLoading(false)
-  }, [])
+  }, [isAdmin])
+
+  const loadSettlement = useCallback(
+    async (branchId: number) => {
+      setSettlementLoading(true)
+      setSettlementError(null)
+      const qs = new URLSearchParams()
+      if (settlementFrom) qs.set('fromDate', settlementFrom)
+      if (settlementTo) qs.set('toDate', settlementTo)
+      const suffix = qs.toString() ? `?${qs}` : ''
+      const res = await apiFetch(`/api/branches/${branchId}/settlement${suffix}`)
+      setSettlementLoading(false)
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}))
+        setSettlementError((j as { error?: string }).error ?? 'Could not load settlement')
+        setSettlement(null)
+        return
+      }
+      setSettlement(await res.json())
+    },
+    [settlementFrom, settlementTo]
+  )
 
   useEffect(() => {
     if (!isAdmin && !isBranchManager) return
     void load()
   }, [load, isAdmin, isBranchManager])
 
+  useEffect(() => {
+    if (selectedBranchId == null) return
+    void loadSettlement(selectedBranchId)
+  }, [selectedBranchId, loadSettlement])
+
   if (!isAdmin && !isBranchManager) {
     return <Navigate to="/map" replace />
   }
+
+  const normalBranches = branches.filter(
+    (b) => (b.settlementType ?? 'Normal').toLowerCase() !== 'commission'
+  )
+  const commissionBranches = branches.filter(
+    (b) => (b.settlementType ?? '').toLowerCase() === 'commission'
+  )
 
   const resetForm = () => {
     setFormName('')
     setFormCode('')
     setFormAddress('')
+    setFormSettlementType('Normal')
+    setFormCommissionPercent('')
     setEditingId(null)
     setError(null)
   }
@@ -576,17 +867,37 @@ function BranchesPage() {
     setFormName(b.branchName)
     setFormCode(b.code)
     setFormAddress(b.address)
+    setFormSettlementType(
+      (b.settlementType ?? 'Normal').toLowerCase() === 'commission' ? 'Commission' : 'Normal'
+    )
+    setFormCommissionPercent(
+      b.commissionPercent != null ? String(b.commissionPercent) : ''
+    )
     setError(null)
+  }
+
+  const selectSettlement = (b: Branch) => {
+    setSelectedBranchId(b.id)
+    setPayAmount('')
+    setPayNote('')
+    setPayDirection('ToAdmin')
+    setSettlementError(null)
   }
 
   const saveBranch = async (e: React.FormEvent) => {
     e.preventDefault()
     setSaving(true)
     setError(null)
+    const commission =
+      formSettlementType === 'Commission' && formCommissionPercent.trim() !== ''
+        ? Number(formCommissionPercent)
+        : null
     const body = JSON.stringify({
       branchName: formName,
       code: formCode,
       address: formAddress,
+      settlementType: formSettlementType,
+      commissionPercent: commission,
     })
     const res = editingId
       ? await apiFetch(`/api/branches/${editingId}`, { method: 'PUT', body })
@@ -616,18 +927,56 @@ function BranchesPage() {
       return
     }
     if (editingId === id) resetForm()
+    if (selectedBranchId === id) {
+      setSelectedBranchId(null)
+      setSettlement(null)
+    }
     await load()
   }
 
-  if (loading) return <p className="text-slate-400">Loading…</p>
+  const recordPayment = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (selectedBranchId == null) return
+    const amount = toMoneyCents(Number(payAmount))
+    if (amount <= 0) {
+      setSettlementError('Enter a valid payment amount.')
+      return
+    }
+    setPaySaving(true)
+    setSettlementError(null)
+    const res = await apiFetch(`/api/branches/${selectedBranchId}/settlement/payments`, {
+      method: 'POST',
+      body: JSON.stringify({
+        amount,
+        direction: payDirection,
+        note: payNote.trim() || null,
+      }),
+    })
+    setPaySaving(false)
+    if (!res.ok) {
+      const j = await res.json().catch(() => ({}))
+      setSettlementError((j as { error?: string }).error ?? 'Could not record payment')
+      return
+    }
+    setSettlement(await res.json())
+    setPayAmount('')
+    setPayNote('')
+  }
+
+  if (loading) return <p className="text-slate-400">Loading...</p>
+
+  const isCommissionSettlement =
+    settlement?.settlementType?.toLowerCase() === 'commission'
 
   return (
     <div>
       <h2 className="mb-4 text-xl font-semibold text-white">Branches</h2>
       <p className="mb-6 text-sm text-slate-400">
-        {isAdmin
-          ? 'Create and manage branch locations. Branch codes must be unique.'
-          : 'All hubs (read-only). Only an admin can add, edit, or remove branches.'}
+        Branches are grouped into two settlement categories.{' '}
+        <span className="text-slate-300">Normal</span> branches remit all collections
+        (origin and destination) to admin; partial payments are tracked.{' '}
+        <span className="text-slate-300">Commission</span> branches remit 100% of origin
+        collections; destination delivery earns a commission on shipping price only.
       </p>
 
       {isAdmin && (
@@ -666,6 +1015,35 @@ function BranchesPage() {
                 required
               />
             </div>
+            <div>
+              <label className="text-sm text-slate-400">Settlement category</label>
+              <select
+                className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-white"
+                value={formSettlementType}
+                onChange={(e) =>
+                  setFormSettlementType(e.target.value as 'Normal' | 'Commission')
+                }
+              >
+                <option value="Normal">Normal — all collections payable to admin</option>
+                <option value="Commission">Commission — % on destination delivery only</option>
+              </select>
+            </div>
+            {formSettlementType === 'Commission' && (
+              <div>
+                <label className="text-sm text-slate-400">Commission % (destination)</label>
+                <input
+                  type="number"
+                  min={0.01}
+                  max={100}
+                  step={0.01}
+                  className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-white"
+                  value={formCommissionPercent}
+                  onChange={(e) => setFormCommissionPercent(e.target.value)}
+                  required
+                  placeholder="e.g. 15"
+                />
+              </div>
+            )}
           </div>
           {error && <p className="mt-3 text-sm text-red-400">{error}</p>}
           <div className="mt-4 flex flex-wrap gap-2">
@@ -689,52 +1067,231 @@ function BranchesPage() {
         </form>
       )}
 
-      <div className="overflow-hidden rounded-xl border border-slate-800">
-        <table className="w-full text-left text-sm">
-          <thead className="bg-slate-900 text-slate-400">
-            <tr>
-              <th className="px-4 py-3">Name</th>
-              <th className="px-4 py-3">Code</th>
-              <th className="px-4 py-3">Address</th>
-              {isAdmin && <th className="px-4 py-3"></th>}
-            </tr>
-          </thead>
-          <tbody>
-            {branches.map((b) => (
-              <tr key={b.id} className="border-t border-slate-800">
-                <td className="px-4 py-3">{b.branchName}</td>
-                <td className="px-4 py-3 font-mono text-xs">{b.code}</td>
-                <td className="px-4 py-3 text-slate-300">{b.address}</td>
-                {isAdmin && (
-                  <td className="px-4 py-3 text-right">
-                    <button
-                      type="button"
-                      onClick={() => startEdit(b)}
-                      className="mr-2 inline-flex items-center gap-1 rounded-lg border border-slate-600 px-2 py-1 text-slate-300 hover:bg-slate-800"
-                    >
-                      <Pencil size={14} /> Edit
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => void remove(b.id)}
-                      className="inline-flex items-center gap-1 rounded-lg border border-red-900/50 px-2 py-1 text-red-400 hover:bg-red-950/40"
-                    >
-                      <Trash2 size={14} /> Delete
-                    </button>
-                  </td>
+      {!isAdmin && (
+        <p className="mb-4 text-sm text-slate-400">
+          Branch list is read-only. Open settlement to see collections and record partial
+          payments to admin.
+        </p>
+      )}
+
+      <BranchTable
+        title="Category 1 — Normal branches"
+        description="All cash collected at origin and destination is payable to admin. Partial payments to admin are tracked."
+        rows={normalBranches}
+        isAdmin={isAdmin}
+        selectedBranchId={selectedBranchId}
+        onSelectSettlement={selectSettlement}
+        onEdit={startEdit}
+        onRemove={remove}
+      />
+
+      <BranchTable
+        title="Category 2 — Commission branches"
+        description="Origin: 100% to admin. Destination: commission on shipping price; branch keeps commission and remits the rest."
+        rows={commissionBranches}
+        isAdmin={isAdmin}
+        selectedBranchId={selectedBranchId}
+        onSelectSettlement={selectSettlement}
+        onEdit={startEdit}
+        onRemove={remove}
+      />
+
+      {selectedBranchId != null && (
+        <div className="rounded-xl border border-violet-900/50 bg-slate-900/50 p-6">
+          <h3 className="mb-1 text-lg font-medium text-white">
+            Settlement — {settlement?.branchName ?? '…'}
+          </h3>
+          <p className="mb-4 text-xs text-slate-500">
+            Delivered products only
+            {settlementFrom || settlementTo
+              ? ` (${settlementFrom || '…'} to ${settlementTo || '…'})`
+              : ' (all time)'}
+            . Payments reduce the full balance.
+          </p>
+
+          <div className="mb-4 flex flex-wrap items-end gap-3">
+            <div>
+              <label className="text-xs text-slate-400">From</label>
+              <input
+                type="date"
+                className="mt-1 block rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-white"
+                value={settlementFrom}
+                onChange={(e) => setSettlementFrom(e.target.value)}
+              />
+            </div>
+            <div>
+              <label className="text-xs text-slate-400">To</label>
+              <input
+                type="date"
+                className="mt-1 block rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-white"
+                value={settlementTo}
+                onChange={(e) => setSettlementTo(e.target.value)}
+              />
+            </div>
+            <button
+              type="button"
+              onClick={() => void loadSettlement(selectedBranchId)}
+              disabled={settlementLoading}
+              className="rounded-lg bg-slate-700 px-4 py-2 text-sm text-white hover:bg-slate-600 disabled:opacity-50"
+            >
+              {settlementLoading ? 'Loading…' : 'Apply dates'}
+            </button>
+          </div>
+
+          {settlementError && (
+            <p className="mb-3 text-sm text-red-400">{settlementError}</p>
+          )}
+
+          {settlement && !settlementLoading && (
+            <>
+              <div className="mb-6 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                <div className="rounded-lg border border-slate-800 bg-slate-950/60 p-3">
+                  <p className="text-xs text-slate-500">Collected as origin</p>
+                  <p className="text-lg font-semibold text-white">
+                    {formatMoneyDisplay(Number(settlement.collectedAsOrigin))}
+                  </p>
+                  <p className="text-xs text-slate-600">100% payable to admin</p>
+                </div>
+                <div className="rounded-lg border border-slate-800 bg-slate-950/60 p-3">
+                  <p className="text-xs text-slate-500">Collected as destination</p>
+                  <p className="text-lg font-semibold text-white">
+                    {formatMoneyDisplay(Number(settlement.collectedAsDestination))}
+                  </p>
+                  {isCommissionSettlement && (
+                    <p className="text-xs text-slate-600">
+                      Shipping:{' '}
+                      {formatMoneyDisplay(Number(settlement.destinationShippingTotal))}
+                    </p>
+                  )}
+                </div>
+                {isCommissionSettlement && (
+                  <div className="rounded-lg border border-emerald-900/40 bg-emerald-950/20 p-3">
+                    <p className="text-xs text-emerald-400/80">
+                      Commission ({settlement.commissionPercent}%)
+                    </p>
+                    <p className="text-lg font-semibold text-emerald-300">
+                      {formatMoneyDisplay(Number(settlement.commissionEarned))}
+                    </p>
+                  </div>
                 )}
-              </tr>
-            ))}
-            {branches.length === 0 && (
-              <tr>
-                <td className="px-4 py-6 text-slate-500" colSpan={isAdmin ? 4 : 3}>
-                  No branches yet.
-                </td>
-              </tr>
-            )}
-          </tbody>
-        </table>
-      </div>
+                <div className="rounded-lg border border-violet-900/40 bg-violet-950/20 p-3">
+                  <p className="text-xs text-violet-300/80">Net position</p>
+                  <p className="text-lg font-semibold text-violet-200">
+                    {formatMoneyDisplay(Number(settlement.netSettlement))}
+                  </p>
+                  <p className="text-xs text-slate-600">
+                    + branch owes admin · − admin owes branch
+                  </p>
+                </div>
+              </div>
+
+              <div className="mb-6 grid gap-3 sm:grid-cols-2">
+                <div className="rounded-lg border border-amber-900/40 bg-amber-950/20 p-4">
+                  <p className="text-sm text-amber-200/90">Due to admin</p>
+                  <p className="text-2xl font-bold text-amber-100">
+                    {formatMoneyDisplay(Number(settlement.dueToAdmin))}
+                  </p>
+                  <p className="mt-1 text-xs text-slate-500">
+                    Paid: {formatMoneyDisplay(Number(settlement.paidToAdmin))}
+                  </p>
+                </div>
+                {(isCommissionSettlement || settlement.dueFromAdmin > 0) && (
+                  <div className="rounded-lg border border-sky-900/40 bg-sky-950/20 p-4">
+                    <p className="text-sm text-sky-200/90">Due from admin</p>
+                    <p className="text-2xl font-bold text-sky-100">
+                      {formatMoneyDisplay(Number(settlement.dueFromAdmin))}
+                    </p>
+                    <p className="mt-1 text-xs text-slate-500">
+                      Paid: {formatMoneyDisplay(Number(settlement.paidFromAdmin))}
+                    </p>
+                  </div>
+                )}
+              </div>
+
+              {(settlement.dueToAdmin > 0 || (isAdmin && settlement.dueFromAdmin > 0)) && (
+                <form
+                  onSubmit={recordPayment}
+                  className="mb-6 rounded-lg border border-slate-800 bg-slate-950/40 p-4"
+                >
+                  <h4 className="mb-3 text-sm font-medium text-slate-300">
+                    Record partial payment
+                  </h4>
+                  <div className="flex flex-wrap gap-3">
+                    {isAdmin && settlement.dueFromAdmin > 0 && (
+                      <select
+                        className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-white"
+                        value={payDirection}
+                        onChange={(e) =>
+                          setPayDirection(e.target.value as 'ToAdmin' | 'FromAdmin')
+                        }
+                      >
+                        <option value="ToAdmin">Branch pays admin</option>
+                        <option value="FromAdmin">Admin pays branch</option>
+                      </select>
+                    )}
+                    <input
+                      type="number"
+                      min={0.01}
+                      step={0.01}
+                      placeholder="Amount"
+                      className="w-32 rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-white"
+                      value={payAmount}
+                      onChange={(e) => setPayAmount(e.target.value)}
+                      required
+                    />
+                    <input
+                      type="text"
+                      placeholder="Note (optional)"
+                      className="min-w-[12rem] flex-1 rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-white"
+                      value={payNote}
+                      onChange={(e) => setPayNote(e.target.value)}
+                    />
+                    <button
+                      type="submit"
+                      disabled={paySaving}
+                      className="rounded-lg bg-violet-600 px-4 py-2 text-white hover:bg-violet-500 disabled:opacity-50"
+                    >
+                      {paySaving ? 'Saving…' : 'Record payment'}
+                    </button>
+                  </div>
+                  {!isAdmin && (
+                    <p className="mt-2 text-xs text-slate-500">
+                      Branch managers can record payments from the branch to admin only.
+                    </p>
+                  )}
+                </form>
+              )}
+
+              {settlement.recentPayments.length > 0 && (
+                <div>
+                  <h4 className="mb-2 text-sm font-medium text-slate-400">Recent payments</h4>
+                  <ul className="space-y-2 text-sm">
+                    {settlement.recentPayments.map((p) => (
+                      <li
+                        key={p.id}
+                        className="flex flex-wrap justify-between gap-2 rounded-lg border border-slate-800 px-3 py-2"
+                      >
+                        <span>
+                          {p.direction === 'ToAdmin' ? '→ Admin' : '← From admin'}{' '}
+                          <span className="font-mono text-white">
+                            {formatMoneyDisplay(Number(p.amount))}
+                          </span>
+                          {p.note && (
+                            <span className="ml-2 text-slate-500">({p.note})</span>
+                          )}
+                        </span>
+                        <span className="text-slate-500">
+                          {new Date(p.createdAt).toLocaleString()} · {p.recordedByName}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      )}
     </div>
   )
 }
@@ -779,7 +1336,7 @@ function StaffPage() {
   }, [isBranchManager, branches])
 
   if (!isAdmin && !isBranchManager) return <Navigate to="/map" replace />
-  if (loading) return <p className="text-slate-400">Loading…</p>
+  if (loading) return <p className="text-slate-400">Loadingâ€¦</p>
 
   const createStaff = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -940,7 +1497,7 @@ function StaffPage() {
             disabled={creating}
             className="rounded-lg bg-violet-600 px-4 py-2 text-white hover:bg-violet-500 disabled:opacity-50"
           >
-            {creating ? 'Creating…' : 'Create staff'}
+            {creating ? 'Creatingâ€¦' : 'Create staff'}
           </button>
         </div>
       </form>
@@ -961,7 +1518,7 @@ function StaffPage() {
               <tr key={s.id} className="border-t border-slate-800">
                 <td className="px-4 py-3">{s.fullName}</td>
                 <td className="px-4 py-3">{s.phone}</td>
-                <td className="px-4 py-3 text-slate-300">{s.branchName ?? '—'}</td>
+                <td className="px-4 py-3 text-slate-300">{s.branchName ?? 'â€”'}</td>
                 <td className="px-4 py-3">
                   {s.isActive ? (
                     <span className="text-emerald-400">Yes</span>
@@ -1100,7 +1657,7 @@ function BranchManagersPage() {
   }, [load, role])
 
   if (role !== 'Admin') return <Navigate to="/map" replace />
-  if (loading) return <p className="text-slate-400">Loading…</p>
+  if (loading) return <p className="text-slate-400">Loadingâ€¦</p>
 
   const createManager = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -1251,7 +1808,7 @@ function BranchManagersPage() {
             disabled={creating}
             className="rounded-lg bg-violet-600 px-4 py-2 text-white hover:bg-violet-500 disabled:opacity-50"
           >
-            {creating ? 'Creating…' : 'Create branch manager'}
+            {creating ? 'Creatingâ€¦' : 'Create branch manager'}
           </button>
         </div>
       </form>
@@ -1272,7 +1829,7 @@ function BranchManagersPage() {
               <tr key={s.id} className="border-t border-slate-800">
                 <td className="px-4 py-3">{s.fullName}</td>
                 <td className="px-4 py-3">{s.phone}</td>
-                <td className="px-4 py-3 text-slate-300">{s.branchName ?? '—'}</td>
+                <td className="px-4 py-3 text-slate-300">{s.branchName ?? 'â€”'}</td>
                 <td className="px-4 py-3">
                   {s.isActive ? (
                     <span className="text-emerald-400">Yes</span>
@@ -1441,7 +1998,7 @@ function OsmLiveMap({
         >
           <Popup>
             <span className="text-slate-900">
-              {d.fullName} · {d.vehicleNumber} (#{d.driverProfileId})
+              {d.fullName} Â· {d.vehicleNumber} (#{d.driverProfileId})
             </span>
           </Popup>
         </LeafletMarker>
@@ -1565,12 +2122,12 @@ function LiveMapPage() {
         {connection?.state === HubConnectionState.Connected ? (
           <span className="text-emerald-400">connected</span>
         ) : (
-          <span className="text-amber-400">connecting…</span>
+          <span className="text-amber-400">connectingâ€¦</span>
         )}
         {apiKey ? (
-          <span className="text-slate-600"> · Google Maps</span>
+          <span className="text-slate-600"> Â· Google Maps</span>
         ) : (
-          <span className="text-slate-600"> · OpenStreetMap (set VITE_GOOGLE_MAPS_API_KEY for Google tiles)</span>
+          <span className="text-slate-600"> Â· OpenStreetMap (set VITE_GOOGLE_MAPS_API_KEY for Google tiles)</span>
         )}
       </p>
 
@@ -1587,7 +2144,7 @@ function LiveMapPage() {
                   <Marker
                     key={d.driverProfileId}
                     position={{ lat: d.lat, lng: d.lng }}
-                    title={`${d.fullName} · ${d.vehicleNumber} (#${d.driverProfileId})`}
+                    title={`${d.fullName} Â· ${d.vehicleNumber} (#${d.driverProfileId})`}
                     onClick={() => setSelectedId(d.driverProfileId)}
                   />
                 ))}
@@ -1636,7 +2193,7 @@ function LiveMapPage() {
                   >
                     <div className="font-medium">{d.fullName}</div>
                     <div className="text-xs text-slate-400">
-                      {d.vehicleNumber} · #{d.driverProfileId}
+                      {d.vehicleNumber} Â· #{d.driverProfileId}
                       {d.isOnline ? (
                         <span className="ml-2 text-emerald-400">online</span>
                       ) : (
@@ -1691,17 +2248,27 @@ function ProductsPage() {
   const [deliverReceiverPhone, setDeliverReceiverPhone] = useState('')
   const [deliverDestinationAmount, setDeliverDestinationAmount] = useState('')
   const [deliverSaving, setDeliverSaving] = useState(false)
+  const [searchMode, setSearchMode] = useState<'tracking' | 'phone'>('tracking')
+  const [searchInput, setSearchInput] = useState('')
+  const [activeSearch, setActiveSearch] = useState<{ mode: 'tracking' | 'phone'; q: string } | null>(
+    null,
+  )
+  const [detail, setDetail] = useState<ProductDetail | null>(null)
+  const [detailLoading, setDetailLoading] = useState(false)
 
   const load = useCallback(async () => {
     setLoading(true)
-    const [pr, br] = await Promise.all([
-      apiFetch('/api/products'),
-      apiFetch('/api/branches'),
-    ])
+    const params = new URLSearchParams()
+    if (activeSearch?.q) {
+      if (activeSearch.mode === 'tracking') params.set('tracking', activeSearch.q)
+      else params.set('phone', activeSearch.q)
+    }
+    const productsPath = params.toString() ? `/api/products?${params}` : '/api/products'
+    const [pr, br] = await Promise.all([apiFetch(productsPath), apiFetch('/api/branches')])
     if (pr.ok) setProducts(await pr.json())
     if (br.ok) setBranches(await br.json())
     setLoading(false)
-  }, [])
+  }, [activeSearch])
 
   useEffect(() => {
     if (!isAdmin && !isBranchManager) return
@@ -1861,6 +2428,36 @@ function ProductsPage() {
   const canManagerDeliver = (p: ProductRow): boolean =>
     isBranchManager && managerBranchId != null && p.destinationBranchId === managerBranchId
 
+  const runSearch = () => {
+    const q = searchInput.trim()
+    if (!q) {
+      setActiveSearch(null)
+      return
+    }
+    setActiveSearch({ mode: searchMode, q })
+  }
+
+  const clearSearch = () => {
+    setSearchInput('')
+    setActiveSearch(null)
+  }
+
+  const openDetail = async (p: ProductRow) => {
+    setDetail(null)
+    setDetailLoading(true)
+    setFormError(null)
+    const res = await apiFetch(`/api/products/${p.id}`)
+    setDetailLoading(false)
+    if (!res.ok) {
+      const j = await res.json().catch(() => ({}))
+      setFormError((j as { error?: string }).error ?? 'Could not load product details.')
+      return
+    }
+    setDetail((await res.json()) as ProductDetail)
+  }
+
+  const closeDetail = () => setDetail(null)
+
   if (loading) return <p className="text-slate-400">Loading…</p>
 
   return (
@@ -1871,7 +2468,7 @@ function ProductsPage() {
           <p className="mt-1 text-sm text-slate-400">
             {isBranchManager
               ? 'Shipments linked to your branch (origin, destination, or current location). Reprint QR labels anytime.'
-              : 'View, edit, or delete shipments. Reprint the shipping label QR anytime. Products on an active trip cannot be deleted.'}
+              : 'View, edit, or delete shipments. Click a row for full details. Products on an active trip cannot be deleted.'}
           </p>
         </div>
         <Link
@@ -1885,6 +2482,62 @@ function ProductsPage() {
       {formError && (
         <p className="no-print mb-4 rounded-lg border border-red-900/50 bg-red-950/30 px-3 py-2 text-sm text-red-400">
           {formError}
+        </p>
+      )}
+
+      <form
+        className="no-print mb-4 flex flex-wrap items-end gap-3 rounded-xl border border-slate-800 bg-slate-900/40 p-4"
+        onSubmit={(e) => {
+          e.preventDefault()
+          runSearch()
+        }}
+      >
+        <div className="min-w-[160px]">
+          <label className="text-xs text-slate-400">Search by</label>
+          <select
+            className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white"
+            value={searchMode}
+            onChange={(e) => setSearchMode(e.target.value as 'tracking' | 'phone')}
+          >
+            <option value="tracking">Tracking number</option>
+            <option value="phone">Sender or receiver phone</option>
+          </select>
+        </div>
+        <div className="min-w-[200px] flex-1">
+          <label className="text-xs text-slate-400">
+            {searchMode === 'tracking' ? 'Tracking number' : 'Phone number'}
+          </label>
+          <input
+            type="search"
+            className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white"
+            placeholder={
+              searchMode === 'tracking' ? 'e.g. TN-abc123â€¦' : 'Sender or receiver phone'
+            }
+            value={searchInput}
+            onChange={(e) => setSearchInput(e.target.value)}
+          />
+        </div>
+        <button
+          type="submit"
+          className="inline-flex items-center gap-2 rounded-lg bg-violet-600 px-4 py-2 text-sm text-white hover:bg-violet-500"
+        >
+          <Search size={16} /> Search
+        </button>
+        {activeSearch && (
+          <button
+            type="button"
+            onClick={clearSearch}
+            className="rounded-lg border border-slate-600 px-4 py-2 text-sm text-slate-300 hover:bg-slate-800"
+          >
+            Clear
+          </button>
+        )}
+      </form>
+
+      {activeSearch && (
+        <p className="no-print mb-3 text-xs text-slate-500">
+          Showing results for{' '}
+          {activeSearch.mode === 'tracking' ? 'tracking' : 'phone'} &quot;{activeSearch.q}&quot;
         </p>
       )}
 
@@ -1910,7 +2563,11 @@ function ProductsPage() {
             {products.map((p) => {
               const badge = getPaymentBadge(p)
               return (
-                <tr key={p.id} className="border-t border-slate-800">
+                <tr
+                  key={p.id}
+                  className="cursor-pointer border-t border-slate-800 hover:bg-slate-900/60"
+                  onClick={() => void openDetail(p)}
+                >
                 <td className="px-3 py-2 font-mono text-xs text-white">{p.trackingNumber}</td>
                 <td className="max-w-[140px] truncate px-3 py-2 text-slate-300" title={p.description}>
                   {p.description}
@@ -1932,7 +2589,7 @@ function ProductsPage() {
                   {Math.max(0, Number(p.dueAmount ?? 0)).toFixed(2)}
                 </td>
                 <td className="px-3 py-2 text-slate-400">{p.status}</td>
-                <td className="px-3 py-2 text-right">
+                <td className="px-3 py-2 text-right" onClick={(e) => e.stopPropagation()}>
                   <button
                     type="button"
                     onClick={() => {
@@ -1976,13 +2633,132 @@ function ProductsPage() {
             {products.length === 0 && (
               <tr>
                 <td className="px-4 py-8 text-center text-slate-500" colSpan={isBranchManager ? 12 : 11}>
-                  No products yet. Use <Link className="text-violet-400 hover:underline" to="/qr">New product</Link> to create one.
+                  {activeSearch ? (
+                    <>No products match your search.</>
+                  ) : (
+                    <>
+                      No products yet. Use{' '}
+                      <Link className="text-violet-400 hover:underline" to="/qr">
+                        New product
+                      </Link>{' '}
+                      to create one.
+                    </>
+                  )}
                 </td>
               </tr>
             )}
           </tbody>
         </table>
       </div>
+
+      {(detailLoading || detail) && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
+          onClick={closeDetail}
+        >
+          <div
+            className="max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-2xl border border-slate-700 bg-slate-950 p-6 shadow-xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {detailLoading && <p className="text-slate-400">Loading details…</p>}
+            {detail && !detailLoading && (
+              <>
+                <div className="mb-4 flex items-start justify-between gap-4">
+                  <div>
+                    <h3 className="text-lg font-semibold text-white">Product details</h3>
+                    <p className="mt-1 font-mono text-sm text-violet-300">{detail.trackingNumber}</p>
+                    <p className="text-xs text-slate-500">{detail.status}</p>
+                  </div>
+                  <button type="button" onClick={closeDetail} className="text-slate-400 hover:text-white">
+                    ✕
+                  </button>
+                </div>
+
+                <section className="mb-4 rounded-lg border border-slate-800 bg-slate-900/50 p-3">
+                  <h4 className="text-xs font-semibold uppercase tracking-wide text-slate-500">Sender</h4>
+                  <p className="mt-1 text-sm text-white">{detail.sender.name}</p>
+                  <p className="font-mono text-sm text-emerald-300">{detail.sender.phone}</p>
+                  <p className="text-xs text-slate-400">{detail.sender.address}</p>
+                </section>
+
+                <section className="mb-4 rounded-lg border border-slate-800 bg-slate-900/50 p-3">
+                  <h4 className="text-xs font-semibold uppercase tracking-wide text-slate-500">Receiver</h4>
+                  <p className="mt-1 text-sm text-white">{detail.receiver.name}</p>
+                  <p className="font-mono text-sm text-emerald-300">{detail.receiver.phone}</p>
+                  <p className="text-xs text-slate-400">{detail.receiver.address}</p>
+                </section>
+
+                <section className="mb-4 rounded-lg border border-slate-800 bg-slate-900/50 p-3">
+                  <h4 className="text-xs font-semibold uppercase tracking-wide text-slate-500">Branches</h4>
+                  <p className="mt-1 text-sm text-slate-200">
+                    <span className="text-slate-500">Origin:</span> {detail.originBranchName}
+                  </p>
+                  <p className="text-sm text-slate-200">
+                    <span className="text-slate-500">Destination:</span> {detail.destinationBranchName}
+                  </p>
+                </section>
+
+                <section className="mb-4 rounded-lg border border-slate-800 bg-slate-900/50 p-3">
+                  <h4 className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                    Branch managers
+                  </h4>
+                  {detail.originBranchManager ? (
+                    <p className="mt-2 text-sm text-slate-200">
+                      <span className="text-slate-500">Origin ({detail.originBranchManager.branchName}):</span>{' '}
+                      {detail.originBranchManager.fullName} ·{' '}
+                      <span className="font-mono text-emerald-300">{detail.originBranchManager.phone}</span>
+                    </p>
+                  ) : (
+                    <p className="mt-2 text-xs text-slate-500">No branch manager assigned at origin.</p>
+                  )}
+                  {detail.destinationBranchManager ? (
+                    <p className="mt-1 text-sm text-slate-200">
+                      <span className="text-slate-500">
+                        Destination ({detail.destinationBranchManager.branchName}):
+                      </span>{' '}
+                      {detail.destinationBranchManager.fullName} ·{' '}
+                      <span className="font-mono text-emerald-300">{detail.destinationBranchManager.phone}</span>
+                    </p>
+                  ) : (
+                    <p className="mt-1 text-xs text-slate-500">No branch manager assigned at destination.</p>
+                  )}
+                </section>
+
+                <section className="mb-4 rounded-lg border border-slate-800 bg-slate-900/50 p-3">
+                  <h4 className="text-xs font-semibold uppercase tracking-wide text-slate-500">Driver & trip</h4>
+                  {detail.trip ? (
+                    <>
+                      <p className="mt-1 text-sm text-white">{detail.trip.driverName}</p>
+                      <p className="font-mono text-sm text-emerald-300">{detail.trip.driverPhone}</p>
+                      <p className="text-xs text-slate-400">Vehicle {detail.trip.vehicleNumber}</p>
+                      <p className="mt-2 text-xs text-slate-400">
+                        Trip {detail.trip.tripId.slice(0, 8)}… · {detail.trip.status} ·{' '}
+                        {new Date(detail.trip.loadTime).toLocaleString()}
+                      </p>
+                      <p className="text-xs text-slate-400">
+                        {detail.trip.originBranchName} → {detail.trip.destinationBranchesLabel}
+                      </p>
+                      <p className="text-xs text-amber-300">
+                        Trip pay {Number(detail.trip.driverPaymentAmount).toFixed(2)}
+                      </p>
+                    </>
+                  ) : (
+                    <p className="mt-1 text-xs text-slate-500">Not loaded on a trip yet.</p>
+                  )}
+                </section>
+
+                <section className="rounded-lg border border-slate-800 bg-slate-900/50 p-3 text-xs text-slate-400">
+                  <p>
+                    Shipping {Number(detail.shippingPrice).toFixed(2)} · Due{' '}
+                    {Number(detail.dueAmount).toFixed(2)}
+                  </p>
+                  <p className="mt-1">Created {new Date(detail.createdAt).toLocaleString()}</p>
+                </section>
+              </>
+            )}
+          </div>
+        </div>
+      )}
 
       {reprint && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 print:bg-transparent print:p-0">
@@ -2176,14 +2952,14 @@ function ProductsPage() {
             {deliverDue <= 0 ? (
               <p className="mb-4 rounded-lg border border-emerald-900/40 bg-emerald-950/25 px-3 py-2 text-sm text-emerald-200/90">
                 Shipping was paid in full at the origin branch (sender). There is no balance to collect at
-                destination — only receiver phone verification is required.
+                destination â€” only receiver phone verification is required.
               </p>
             ) : (
               <p className="mb-4 rounded-lg border border-amber-900/40 bg-amber-950/20 px-3 py-2 text-sm text-amber-100/90">
                 Partial payment was taken at origin. Collect the remaining balance from the receiver at this
                 branch:{' '}
                 <span className="font-mono font-semibold text-amber-200">{deliverDue.toFixed(2)}</span>.
-                Enter that full amount below — Confirm delivery stays hidden until it matches exactly.
+                Enter that full amount below â€” Confirm delivery stays hidden until it matches exactly.
               </p>
             )}
 
@@ -2445,7 +3221,7 @@ function QrLabelPage() {
             disabled={isBranchManager}
           >
             {branches.length === 0 ? (
-              <option value="">No branches — add branches first</option>
+              <option value="">No branches â€” add branches first</option>
             ) : (
               branchOptions
             )}
@@ -2460,7 +3236,7 @@ function QrLabelPage() {
             required
           >
             {branches.length === 0 ? (
-              <option value="">No branches — add branches first</option>
+              <option value="">No branches â€” add branches first</option>
             ) : (
               branchOptions
             )}
@@ -2534,7 +3310,7 @@ function QrLabelPage() {
               disabled={submitting || branches.length === 0}
               className="rounded-lg bg-violet-600 px-4 py-2 text-white hover:bg-violet-500 disabled:opacity-50"
             >
-              {submitting ? 'Creating…' : 'Create product'}
+              {submitting ? 'Creatingâ€¦' : 'Create product'}
             </button>
             {(isAdmin || isBranchManager) && (
               <button
@@ -2689,7 +3465,7 @@ function ReportsPage() {
       </p>
       {isAdmin && reportBranches.length > 0 && (
         <div className="mb-6 max-w-md rounded-xl border border-slate-800 bg-slate-900/40 p-4">
-          <label className="text-sm text-slate-400">Booking volume report — sending (origin) branch</label>
+          <label className="text-sm text-slate-400">Booking volume report â€” sending (origin) branch</label>
           <select
             value={bookingOriginId}
             onChange={(e) => setBookingOriginId(Number(e.target.value))}
@@ -2703,7 +3479,7 @@ function ReportsPage() {
           </select>
           <p className="mt-2 text-xs text-slate-500">
             Counts only <strong className="text-slate-400">Pending</strong> parcels still at the origin (not yet on a
-            trip), grouped by destination — same date range as below, by booking date.
+            trip), grouped by destination â€” same date range as below, by booking date.
           </p>
         </div>
       )}
@@ -2768,7 +3544,7 @@ function ReportsPage() {
           {bookingError}
         </p>
       )}
-      {loading && <p className="mb-4 text-slate-400">Loading…</p>}
+      {loading && <p className="mb-4 text-slate-400">Loadingâ€¦</p>}
       <div className="overflow-hidden rounded-xl border border-slate-800">
         <table className="w-full text-left text-sm">
           <thead className="bg-slate-900 text-slate-400">
@@ -2807,11 +3583,11 @@ function ReportsPage() {
 
       <div className="mt-8 overflow-x-auto rounded-xl border border-slate-800">
         <div className="border-b border-slate-800 bg-slate-900 px-4 py-3">
-          <h3 className="text-sm font-semibold text-white">Pending at origin — by destination (routing priority)</h3>
+          <h3 className="text-sm font-semibold text-white">Pending at origin â€” by destination (routing priority)</h3>
           <p className="mt-1 text-xs text-slate-400">
             From your sending branch: how many <span className="text-slate-300">Pending</span> parcels (still at
             origin, not loaded on a trip) are destined for each branch in the date range (by{' '}
-            <span className="text-slate-300">booking date</span>). Highest counts first — prioritize routes and hubs
+            <span className="text-slate-300">booking date</span>). Highest counts first â€” prioritize routes and hubs
             with the largest backlog.
             {isBranchManager && ' Your branch is always the origin for this table.'}
           </p>
@@ -2952,7 +3728,7 @@ function ConfigurationPage() {
   }, [role, load])
 
   if (role !== 'Admin') return <Navigate to="/map" replace />
-  if (loading) return <p className="text-slate-400">Loading…</p>
+  if (loading) return <p className="text-slate-400">Loadingâ€¦</p>
 
   const save = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -3175,11 +3951,11 @@ function TripsPage() {
 
   const driverOpts = drivers.map((d) => (
     <option key={d.id} value={d.id}>
-      {d.fullName} · {d.vehicleNumber}
+      {d.fullName} Â· {d.vehicleNumber}
     </option>
   ))
 
-  if (loading) return <p className="text-slate-400">Loading…</p>
+  if (loading) return <p className="text-slate-400">Loadingâ€¦</p>
 
   return (
     <div>
@@ -3274,7 +4050,7 @@ function TripsPage() {
             <tr>
               <th className="px-4 py-3">When</th>
               <th className="px-4 py-3">Driver</th>
-              <th className="px-4 py-3">Origin → dest</th>
+              <th className="px-4 py-3">Origin â†’ dest</th>
               <th className="px-4 py-3">Status</th>
               <th className="px-4 py-3 text-right">Payment</th>
               <th className="px-4 py-3 text-right">Products</th>
@@ -3291,7 +4067,7 @@ function TripsPage() {
                   <span className="block text-xs text-slate-500">{t.vehicleNumber}</span>
                 </td>
                 <td className="px-4 py-3 text-slate-300">
-                  {t.originBranchName} → {t.destinationBranchesLabel}
+                  {t.originBranchName} â†’ {t.destinationBranchesLabel}
                 </td>
                 <td className="px-4 py-3">
                   <span
@@ -3483,7 +4259,7 @@ function DriverEarningsPage() {
     await load()
   }
 
-  if (loading) return <p className="text-slate-400">Loading…</p>
+  if (loading) return <p className="text-slate-400">Loadingâ€¦</p>
 
   return (
     <div>
@@ -3512,7 +4288,7 @@ function DriverEarningsPage() {
                   {r.fullName}
                   <span className="block text-xs text-slate-500">{r.vehicleNumber}</span>
                 </td>
-                <td className="px-4 py-3 text-slate-400">{r.branchName ?? '—'}</td>
+                <td className="px-4 py-3 text-slate-400">{r.branchName ?? 'â€”'}</td>
                 <td className="px-4 py-3 text-right font-mono text-emerald-200/90">
                   {formatMoneyDisplay(Number(r.accruedTripEarnings))}
                 </td>

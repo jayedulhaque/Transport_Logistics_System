@@ -25,9 +25,19 @@ public class DriversController(ITransportService service, IHubContext<TransportH
     public Task<IResult> PayEarnings(int id, [FromBody] PayDriverEarningsRequest body, CancellationToken ct) =>
         service.PayDriverEarningsAsync(id, body, User, ct);
 
-    [HttpPatch("{id:int}/branch")]
-    public Task<IResult> UpdateBranch(int id, [FromBody] UpdateDriverBranchRequest body, CancellationToken ct) =>
-        service.UpdateDriverBranchAsync(id, body, User, ct);
+    [HttpPatch("{id:int}")]
+    public Task<IResult> Update(int id, [FromBody] UpdateDriverRequest body, CancellationToken ct) =>
+        service.UpdateDriverAsync(id, body, User, ct);
+
+    [HttpGet("me/earnings")]
+    public Task<IResult> MyEarnings(CancellationToken ct) => service.GetMyDriverEarningsAsync(User, ct);
+
+    [HttpGet("me/profile")]
+    public Task<IResult> MyProfile(CancellationToken ct) => service.GetMyDriverProfileAsync(User, ct);
+
+    [HttpPatch("me/profile")]
+    public Task<IResult> UpdateMyProfile([FromBody] UpdateDriverRequest body, CancellationToken ct) =>
+        service.UpdateMyDriverProfileAsync(body, User, ct);
 
     [HttpPatch("{id:int}/approve")]
     public Task<IResult> Approve(int id, CancellationToken ct) => service.ApproveDriverAsync(id, User, hub, ct);
