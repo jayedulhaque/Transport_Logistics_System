@@ -6,6 +6,7 @@ using Transport.Api.Auth;
 using Transport.Api.Hubs;
 using Transport.Api.Repositories.Implementations;
 using Transport.Api.Repositories.Interfaces;
+using Transport.Api.Options;
 using Transport.Api.Services;
 using Transport.Api.Services.Implementations;
 using Transport.Api.Services.Interfaces;
@@ -16,7 +17,10 @@ var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddInfrastructure(builder.Configuration);
 builder.Services.Configure<JwtOptions>(builder.Configuration.GetSection(JwtOptions.SectionName));
+builder.Services.Configure<SmtpOptions>(builder.Configuration.GetSection(SmtpOptions.SectionName));
+builder.Services.Configure<AppOptions>(builder.Configuration.GetSection(AppOptions.SectionName));
 builder.Services.AddScoped<TokenService>();
+builder.Services.AddScoped<IEmailSender, SmtpEmailSender>();
 builder.Services.AddScoped<ITransportRepository, TransportRepository>();
 builder.Services.AddScoped<ITransportService, TransportService>();
 

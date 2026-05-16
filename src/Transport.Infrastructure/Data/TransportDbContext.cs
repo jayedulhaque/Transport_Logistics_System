@@ -15,17 +15,29 @@ public class TransportDbContext(DbContextOptions<TransportDbContext> options) : 
     public DbSet<TripProduct> TripProducts => Set<TripProduct>();
     public DbSet<TripDestination> TripDestinations => Set<TripDestination>();
     public DbSet<BranchSettlementPayment> BranchSettlementPayments => Set<BranchSettlementPayment>();
+    public DbSet<PasswordResetToken> PasswordResetTokens => Set<PasswordResetToken>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.Entity<User>(entity =>
         {
             entity.HasIndex(u => u.Phone).IsUnique();
+            entity.HasIndex(u => u.Email).IsUnique().HasFilter("\"Email\" IS NOT NULL");
+            entity.Property(u => u.Email).HasMaxLength(256);
             entity.Property(u => u.Role).HasConversion<string>();
             entity.HasOne(u => u.Branch)
                 .WithMany(b => b.Users)
                 .HasForeignKey(u => u.BranchId)
                 .OnDelete(DeleteBehavior.SetNull);
+        });
+
+        modelBuilder.Entity<PasswordResetToken>(entity =>
+        {
+            entity.HasIndex(t => t.TokenHash).IsUnique();
+            entity.HasOne(t => t.User)
+                .WithMany()
+                .HasForeignKey(t => t.UserId)
+                .OnDelete(DeleteBehavior.Cascade);
         });
 
         modelBuilder.Entity<DriverProfile>(entity =>

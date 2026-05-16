@@ -24,6 +24,10 @@ public class StaffController(ITransportService service) : ControllerBase
     public Task<IResult> Delete(int id, CancellationToken ct) =>
         service.DeleteStaffAsync(id, User, ct);
 
+    [HttpPost("/api/staff/{id:int}/reset-password")]
+    public Task<IResult> ResetPassword(int id, [FromBody] ResetPasswordRequest body, CancellationToken ct) =>
+        service.ResetStaffPasswordAsync(id, body, User, ct);
+
     [HttpGet("/api/staff/available-drivers")]
     public Task<IResult> AvailableDrivers(CancellationToken ct) =>
         service.GetAvailableDriversAsync(User, ct);

@@ -15,6 +15,7 @@ public class TransportRepository(TransportDbContext db) : ITransportRepository
     public IQueryable<TripProduct> TripProducts => db.TripProducts;
     public IQueryable<AppConfiguration> AppConfigurations => db.AppConfigurations;
     public IQueryable<BranchSettlementPayment> BranchSettlementPayments => db.BranchSettlementPayments;
+    public IQueryable<PasswordResetToken> PasswordResetTokens => db.PasswordResetTokens;
 
     public Task AddAsync<TEntity>(TEntity entity, CancellationToken ct = default) where TEntity : class =>
         db.Set<TEntity>().AddAsync(entity, ct).AsTask();

@@ -17,6 +17,14 @@ public interface ITransportService
     Task<IResult> RecordBranchSettlementPaymentAsync(int branchId, RecordBranchSettlementPaymentRequest body, ClaimsPrincipal principal, CancellationToken ct = default);
 
     Task<IResult> LoginAsync(LoginRequest body, CancellationToken ct = default);
+    Task<IResult> ChangeMyPasswordAsync(ChangePasswordRequest body, ClaimsPrincipal principal, CancellationToken ct = default);
+    Task<IResult> GetMyAdminAccountAsync(ClaimsPrincipal principal, CancellationToken ct = default);
+    Task<IResult> UpdateMyAdminAccountAsync(UpdateAdminAccountRequest body, ClaimsPrincipal principal, CancellationToken ct = default);
+    Task<IResult> ForgotPasswordAsync(ForgotPasswordRequest body, CancellationToken ct = default);
+    Task<IResult> ResetPasswordWithTokenAsync(ResetPasswordWithTokenRequest body, CancellationToken ct = default);
+    Task<IResult> ResetStaffPasswordAsync(int id, ResetPasswordRequest body, ClaimsPrincipal principal, CancellationToken ct = default);
+    Task<IResult> ResetBranchManagerPasswordAsync(int id, ResetPasswordRequest body, ClaimsPrincipal principal, CancellationToken ct = default);
+    Task<IResult> ResetDriverPasswordAsync(int driverProfileId, ResetPasswordRequest body, ClaimsPrincipal principal, CancellationToken ct = default);
     Task<IResult> RegisterDriverAsync(RegisterDriverRequest body, CancellationToken ct = default);
 
     Task<IResult> GetBranchCollectionsAsync(string? fromDate, string? toDate, ClaimsPrincipal principal, CancellationToken ct = default);

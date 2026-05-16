@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Alert,
   FlatList,
+  Modal,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -51,9 +52,155 @@ function normalizeMobile(input: string): string {
   return input.replace(/\D/g, '');
 }
 
+function ChangePasswordForm({ token }: { token: string }) {
+  const [currentPassword, setCurrentPassword] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [saving, setSaving] = useState(false);
+
+  const submit = async () => {
+    if (newPassword.length < 6) {
+      Alert.alert('Validation', 'New password must be at least 6 characters.');
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      Alert.alert('Validation', 'New password and confirmation do not match.');
+      return;
+    }
+    setSaving(true);
+    const res = await apiFetch(
+      '/api/auth/me/password',
+      {
+        method: 'PATCH',
+        body: JSON.stringify({ currentPassword, newPassword }),
+      },
+      token
+    );
+    setSaving(false);
+    if (!res.ok) {
+      const j = await res.json().catch(() => ({}));
+      Alert.alert('Could not update', (j as { error?: string }).error ?? 'Request failed');
+      return;
+    }
+    setCurrentPassword('');
+    setNewPassword('');
+    setConfirmPassword('');
+    Alert.alert('Password updated', 'Use your new password next time you sign in.');
+  };
+
+  return (
+    <View style={styles.passwordBlock}>
+      <Text style={styles.sectionTitle}>Change password</Text>
+      <Text style={styles.label}>Current password</Text>
+      <TextInput
+        style={styles.input}
+        secureTextEntry
+        value={currentPassword}
+        onChangeText={setCurrentPassword}
+        autoCapitalize="none"
+      />
+      <Text style={styles.label}>New password</Text>
+      <TextInput
+        style={styles.input}
+        secureTextEntry
+        value={newPassword}
+        onChangeText={setNewPassword}
+        autoCapitalize="none"
+      />
+      <Text style={styles.label}>Confirm new password</Text>
+      <TextInput
+        style={styles.input}
+        secureTextEntry
+        value={confirmPassword}
+        onChangeText={setConfirmPassword}
+        autoCapitalize="none"
+      />
+      <AppButton
+        title={saving ? 'Updating…' : 'Update password'}
+        disabled={saving}
+        variant="secondary"
+        onPress={() => void submit()}
+      />
+    </View>
+  );
+}
+
 function isValidMobile(input: string): boolean {
   const n = normalizeMobile(input);
   return n.length >= 9 && n.length <= 15;
+}
+
+function confirmLogout(onConfirm: () => void) {
+  Alert.alert('Log out?', 'You will need to sign in again.', [
+    { text: 'Cancel', style: 'cancel' },
+    { text: 'Log out', style: 'destructive', onPress: onConfirm },
+  ]);
+}
+
+function branchLabel(b: BranchOption): string {
+  return `${b.branchName} (${b.code})`;
+}
+
+function BranchDropdown({
+  branches,
+  value,
+  onChange,
+  placeholder = 'Select branch',
+  disabled = false,
+}: {
+  branches: BranchOption[];
+  value: number | null;
+  onChange: (id: number) => void;
+  placeholder?: string;
+  disabled?: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const selected = branches.find((b) => b.id === value);
+
+  return (
+    <>
+      <Pressable
+        disabled={disabled || branches.length === 0}
+        onPress={() => setOpen(true)}
+        style={({ pressed }) => [
+          styles.dropdown,
+          (disabled || branches.length === 0) && styles.dropdownDisabled,
+          pressed && !disabled && styles.dropdownPressed,
+        ]}
+      >
+        <Text style={[styles.dropdownText, !selected && styles.dropdownPlaceholder]} numberOfLines={1}>
+          {selected ? branchLabel(selected) : placeholder}
+        </Text>
+        <Text style={styles.dropdownChevron}>▾</Text>
+      </Pressable>
+      <Modal visible={open} transparent animationType="fade" onRequestClose={() => setOpen(false)}>
+        <Pressable style={styles.dropdownBackdrop} onPress={() => setOpen(false)}>
+          <View style={styles.dropdownSheet} onStartShouldSetResponder={() => true}>
+            <Text style={styles.dropdownSheetTitle}>Home branch</Text>
+            <ScrollView style={styles.dropdownList} keyboardShouldPersistTaps="handled">
+              {branches.map((b) => {
+                const isSelected = b.id === value;
+                return (
+                  <Pressable
+                    key={b.id}
+                    onPress={() => {
+                      onChange(b.id);
+                      setOpen(false);
+                    }}
+                    style={[styles.dropdownOption, isSelected && styles.dropdownOptionSelected]}
+                  >
+                    <Text style={[styles.dropdownOptionText, isSelected && styles.dropdownOptionTextSelected]}>
+                      {branchLabel(b)}
+                    </Text>
+                  </Pressable>
+                );
+              })}
+            </ScrollView>
+          </View>
+        </Pressable>
+      </Modal>
+    </>
+  );
 }
 
 type DriverProfileData = {
@@ -188,6 +335,40 @@ export default function App() {
     };
   }, []);
 
+  const logoutDriver = useCallback(async () => {
+    const token = driverToken;
+    if (token) {
+      try {
+        await apiFetch(
+          '/api/drivers/me/presence',
+          { method: 'PATCH', body: JSON.stringify({ isOnline: false }) },
+          token
+        );
+      } catch {
+        // clear local session even if presence update fails
+      }
+    }
+    try {
+      await hubRef.current?.stop();
+    } catch {
+      // ignore
+    }
+    setHub(null);
+    setDriverToken(null);
+    setDriverProfileId(null);
+    setScreen('home');
+  }, [driverToken]);
+
+  const logoutStaff = useCallback(() => {
+    setStaffToken(null);
+    setSelectedDriverProfileId(null);
+    setSelectedTripId(null);
+    setScreen('home');
+  }, []);
+
+  const onDriverLogout = () => confirmLogout(() => void logoutDriver());
+  const onStaffLogout = () => confirmLogout(logoutStaff);
+
   return (
     <View style={styles.root}>
       <StatusBar style="light" />
@@ -236,6 +417,7 @@ export default function App() {
           token={driverToken}
           onApproved={() => setScreen('driverTrack')}
           onOpenProfile={openDriverProfile}
+          onLogout={onDriverLogout}
         />
       )}
 
@@ -245,6 +427,7 @@ export default function App() {
           driverProfileId={driverProfileId}
           hub={hub}
           onOpenProfile={openDriverProfile}
+          onLogout={onDriverLogout}
         />
       )}
 
@@ -252,6 +435,7 @@ export default function App() {
         <DriverProfile
           token={driverToken}
           onBack={() => setScreen(driverProfileReturn)}
+          onLogout={onDriverLogout}
         />
       )}
 
@@ -278,7 +462,7 @@ export default function App() {
             setSelectedTripId(null);
             setScreen('staffUnload');
           }}
-          onBack={() => setScreen('home')}
+          onLogout={onStaffLogout}
         />
       )}
 
@@ -292,6 +476,7 @@ export default function App() {
           onBack={() => {
             setScreen('staffDrivers');
           }}
+          onLogout={onStaffLogout}
         />
       )}
 
@@ -302,6 +487,7 @@ export default function App() {
           mode="unload"
           title="Unload parcels at destination branch"
           onBack={() => setScreen('staffDrivers')}
+          onLogout={onStaffLogout}
         />
       )}
     </View>
@@ -397,22 +583,10 @@ function DriverRegister({ onDone, onBack }: { onDone: () => void; onBack: () => 
       <Text style={styles.label}>Home branch</Text>
       {loadingBranches ? (
         <Text style={styles.sub}>Loading branches…</Text>
+      ) : branches.length === 0 ? (
+        <Text style={styles.sub}>No branches found.</Text>
       ) : (
-        <View style={styles.branchList}>
-          {branches.map((b) => {
-            const selected = branchId === b.id;
-            return (
-              <Text
-                key={b.id}
-                onPress={() => setBranchId(b.id)}
-                style={[styles.branchOption, selected && styles.branchOptionSelected]}
-              >
-                {b.branchName} ({b.code})
-              </Text>
-            );
-          })}
-          {branches.length === 0 && <Text style={styles.sub}>No branches found.</Text>}
-        </View>
+        <BranchDropdown branches={branches} value={branchId} onChange={setBranchId} />
       )}
       <AppButton title="Submit registration" onPress={() => void submit()} />
       <View style={styles.gap} />
@@ -486,9 +660,11 @@ function DriverLogin({
 function DriverProfile({
   token,
   onBack,
+  onLogout,
 }: {
   token: string;
   onBack: () => void;
+  onLogout: () => void;
 }) {
   const [profile, setProfile] = useState<DriverProfileData | null>(null);
   const [phone, setPhone] = useState('');
@@ -570,6 +746,8 @@ function DriverProfile({
       <View style={styles.section}>
         <Text style={styles.sub}>Profile not available.</Text>
         <AppButton title="Back" variant="secondary" onPress={onBack} />
+        <View style={styles.gap} />
+        <AppButton title="Log out" variant="danger" onPress={onLogout} />
       </View>
     );
   }
@@ -588,28 +766,22 @@ function DriverProfile({
       <Text style={styles.label}>Vehicle number</Text>
       <TextInput style={styles.input} value={vehicle} onChangeText={setVehicle} />
       <Text style={styles.label}>Home branch</Text>
-      <View style={styles.branchList}>
-        {branches.map((b) => {
-          const selected = branchId === b.id;
-          return (
-            <Text
-              key={b.id}
-              onPress={() => setBranchId(b.id)}
-              style={[styles.branchOption, selected && styles.branchOptionSelected]}
-            >
-              {b.branchName} ({b.code})
-            </Text>
-          );
-        })}
-      </View>
+      {branches.length === 0 ? (
+        <Text style={styles.sub}>No branches found.</Text>
+      ) : (
+        <BranchDropdown branches={branches} value={branchId} onChange={setBranchId} />
+      )}
       <Text style={styles.sub}>
         Status: {profile.isApproved ? 'Approved' : 'Pending approval'}
         {profile.branchName ? ` · ${profile.branchName}` : ''}
       </Text>
       {profile.isApproved && <DriverEarningsCard token={token} />}
+      <ChangePasswordForm token={token} />
       <AppButton title={saving ? 'Saving…' : 'Save profile'} disabled={saving} onPress={() => void save()} />
       <View style={styles.gap} />
       <AppButton title="Back" variant="secondary" onPress={onBack} />
+      <View style={styles.gap} />
+      <AppButton title="Log out" variant="danger" onPress={onLogout} />
     </ScrollView>
   );
 }
@@ -618,10 +790,12 @@ function DriverWait({
   token,
   onApproved,
   onOpenProfile,
+  onLogout,
 }: {
   token: string;
   onApproved: () => void;
   onOpenProfile: () => void;
+  onLogout: () => void;
 }) {
   useEffect(() => {
     const id = setInterval(async () => {
@@ -639,6 +813,8 @@ function DriverWait({
       <Text style={styles.sub}>You will be notified when approved.</Text>
       <View style={styles.gap} />
       <AppButton title="My profile" variant="secondary" onPress={onOpenProfile} />
+      <View style={styles.gap} />
+      <AppButton title="Log out" variant="danger" onPress={onLogout} />
     </View>
   );
 }
@@ -656,11 +832,13 @@ function DriverTrack({
   driverProfileId,
   hub,
   onOpenProfile,
+  onLogout,
 }: {
   token: string;
   driverProfileId: number;
   hub: HubConnection | null;
   onOpenProfile: () => void;
+  onLogout: () => void;
 }) {
   const [phase, setPhase] = useState<'loading' | 'idle' | 'awaiting' | 'tracking'>('loading');
   const [trip, setTrip] = useState<TripStatePayload | null>(null);
@@ -787,6 +965,8 @@ function DriverTrack({
         <AppButton title="Refresh" variant="secondary" onPress={() => void refreshState()} />
         <View style={styles.gap} />
         <AppButton title="My profile" variant="secondary" onPress={onOpenProfile} />
+        <View style={styles.gap} />
+        <AppButton title="Log out" variant="danger" onPress={onLogout} />
       </View>
     );
   }
@@ -809,6 +989,8 @@ function DriverTrack({
         <AppButton title="Refresh status" variant="secondary" onPress={() => void refreshState()} />
         <View style={styles.gap} />
         <AppButton title="My profile" variant="secondary" onPress={onOpenProfile} />
+        <View style={styles.gap} />
+        <AppButton title="Log out" variant="danger" onPress={onLogout} />
         <Text style={[styles.sub, { marginTop: 12 }]}>Profile #{driverProfileId}</Text>
       </View>
     );
@@ -827,6 +1009,8 @@ function DriverTrack({
       <AppButton title="Refresh trip status" variant="secondary" onPress={() => void refreshState()} />
       <View style={styles.gap} />
       <AppButton title="My profile" variant="secondary" onPress={onOpenProfile} />
+      <View style={styles.gap} />
+      <AppButton title="Log out" variant="danger" onPress={onLogout} />
     </View>
   );
 }
@@ -880,12 +1064,12 @@ function StaffPickDriver({
   token,
   onPicked,
   onUnload,
-  onBack,
+  onLogout,
 }: {
   token: string;
   onPicked: (driverProfileId: number, tripId: string) => void;
   onUnload: () => void;
-  onBack: () => void;
+  onLogout: () => void;
 }) {
   const [rows, setRows] = useState<
     {
@@ -936,10 +1120,11 @@ function StaffPickDriver({
         }
       />
       <AppButton title="Refresh list" variant="secondary" onPress={() => void load()} />
+      <ChangePasswordForm token={token} />
       <View style={styles.gap} />
       <AppButton title="Unload at destination branch" onPress={onUnload} />
       <View style={styles.gap} />
-      <AppButton title="Back" variant="secondary" onPress={onBack} />
+      <AppButton title="Log out" variant="danger" onPress={onLogout} />
     </View>
   );
 }
@@ -951,6 +1136,7 @@ function StaffScanner({
   mode,
   title,
   onBack,
+  onLogout,
 }: {
   token: string;
   driverProfileId: number | null;
@@ -958,6 +1144,7 @@ function StaffScanner({
   mode: 'load' | 'unload';
   title: string;
   onBack: () => void;
+  onLogout: () => void;
 }) {
   const [permission, setPermission] = useState<boolean | null>(null);
   const [scanned, setScanned] = useState<{ id: string; tracking: string }[]>([]);
@@ -1120,6 +1307,8 @@ function StaffScanner({
       />
       <View style={styles.gap} />
       <AppButton title="Back" variant="secondary" onPress={onBack} />
+      <View style={styles.gap} />
+      <AppButton title="Log out" variant="danger" onPress={onLogout} />
     </View>
   );
 }
@@ -1188,6 +1377,22 @@ const styles = StyleSheet.create({
     color: '#94a3b8',
   },
   gap: { height: 12 },
+  passwordBlock: {
+    marginTop: 16,
+    marginBottom: 8,
+    padding: 14,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#334155',
+    backgroundColor: '#0f172a',
+    gap: 4,
+  },
+  sectionTitle: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#e2e8f0',
+    marginBottom: 8,
+  },
   waitText: { color: '#fff', fontSize: 18, marginBottom: 8 },
   row: {
     flexDirection: 'row',
@@ -1198,20 +1403,55 @@ const styles = StyleSheet.create({
     borderBottomColor: '#1e293b',
   },
   rowText: { color: '#e2e8f0', flex: 1, paddingRight: 8 },
-  branchList: { gap: 8 },
-  branchOption: {
+  dropdown: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
     borderWidth: 1,
     borderColor: '#334155',
     borderRadius: 8,
-    padding: 10,
-    color: '#e2e8f0',
+    paddingHorizontal: 12,
+    paddingVertical: 12,
     backgroundColor: '#020617',
+    gap: 8,
   },
-  branchOptionSelected: {
-    borderColor: '#6366f1',
-    backgroundColor: '#312e81',
-    color: '#fff',
+  dropdownDisabled: { opacity: 0.45 },
+  dropdownPressed: { opacity: 0.85 },
+  dropdownText: { flex: 1, color: '#e2e8f0', fontSize: 15 },
+  dropdownPlaceholder: { color: '#64748b' },
+  dropdownChevron: { color: '#94a3b8', fontSize: 14 },
+  dropdownBackdrop: {
+    flex: 1,
+    justifyContent: 'flex-end',
+    backgroundColor: 'rgba(2, 6, 23, 0.72)',
   },
+  dropdownSheet: {
+    maxHeight: '70%',
+    borderTopLeftRadius: 16,
+    borderTopRightRadius: 16,
+    borderWidth: 1,
+    borderColor: '#334155',
+    backgroundColor: '#0f172a',
+    paddingTop: 16,
+    paddingBottom: 24,
+  },
+  dropdownSheetTitle: {
+    color: '#e2e8f0',
+    fontSize: 16,
+    fontWeight: '700',
+    paddingHorizontal: 16,
+    marginBottom: 8,
+  },
+  dropdownList: { maxHeight: 360 },
+  dropdownOption: {
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    borderBottomWidth: 1,
+    borderBottomColor: '#1e293b',
+  },
+  dropdownOptionSelected: { backgroundColor: '#312e81' },
+  dropdownOptionText: { color: '#e2e8f0', fontSize: 15 },
+  dropdownOptionTextSelected: { color: '#fff', fontWeight: '600' },
   btnBase: {
     minHeight: 44,
     borderRadius: 12,

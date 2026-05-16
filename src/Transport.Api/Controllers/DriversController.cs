@@ -29,6 +29,10 @@ public class DriversController(ITransportService service, IHubContext<TransportH
     public Task<IResult> Update(int id, [FromBody] UpdateDriverRequest body, CancellationToken ct) =>
         service.UpdateDriverAsync(id, body, User, ct);
 
+    [HttpPost("{id:int}/reset-password")]
+    public Task<IResult> ResetPassword(int id, [FromBody] ResetPasswordRequest body, CancellationToken ct) =>
+        service.ResetDriverPasswordAsync(id, body, User, ct);
+
     [HttpGet("me/earnings")]
     public Task<IResult> MyEarnings(CancellationToken ct) => service.GetMyDriverEarningsAsync(User, ct);
 

@@ -1,10 +1,14 @@
 using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
+using System.Security.Cryptography;
+using System.Text;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 using Transport.Api.Auth;
 using Transport.Api.Contracts;
 using Transport.Api.Hubs;
+using Transport.Api.Options;
 using Transport.Api.Repositories.Interfaces;
 using Transport.Api.Services;
 using Transport.Api.Services.Interfaces;
@@ -13,7 +17,11 @@ using Transport.Domain.Enums;
 
 namespace Transport.Api.Services.Implementations;
 
-public class TransportService(ITransportRepository repo, TokenService tokens) : ITransportService
+public class TransportService(
+    ITransportRepository repo,
+    TokenService tokens,
+    IEmailSender emailSender,
+    IOptions<AppOptions> appOptions) : ITransportService
 {
     public async Task<IResult> GetPublicBranchesAsync(CancellationToken ct = default)
     {
@@ -310,6 +318,229 @@ public class TransportService(ITransportRepository repo, TokenService tokens) : 
         return Results.Ok(new LoginResponse(
             token, user.Id, user.FullName, user.Role.ToString(), user.BranchId, user.DriverProfile?.Id,
             user.DriverProfile?.IsApproved ?? true));
+    }
+
+    public async Task<IResult> ChangeMyPasswordAsync(
+        ChangePasswordRequest body,
+        ClaimsPrincipal principal,
+        CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(body.CurrentPassword))
+            return Results.BadRequest(new { error = "Current password is required." });
+        if (string.IsNullOrWhiteSpace(body.NewPassword) || body.NewPassword.Length < 6)
+            return Results.BadRequest(new { error = "New password must be at least 6 characters." });
+        if (body.CurrentPassword == body.NewPassword)
+            return Results.BadRequest(new { error = "New password must be different from the current password." });
+
+        var userId = GetUserId(principal);
+        var user = await repo.Users.FirstOrDefaultAsync(u => u.Id == userId && u.IsActive, ct);
+        if (user is null) return Results.NotFound();
+        if (user.PasswordHash is null)
+            return Results.BadRequest(new { error = "This account cannot change password." });
+
+        if (!BCrypt.Net.BCrypt.Verify(body.CurrentPassword, user.PasswordHash))
+            return Results.BadRequest(new { error = "Current password is incorrect." });
+
+        user.PasswordHash = BCrypt.Net.BCrypt.HashPassword(body.NewPassword);
+        await repo.SaveChangesAsync(ct);
+        return Results.NoContent();
+    }
+
+    public async Task<IResult> GetMyAdminAccountAsync(ClaimsPrincipal principal, CancellationToken ct = default)
+    {
+        if (!principal.IsInRole(nameof(UserRole.Admin))) return Results.Forbid();
+        var userId = GetUserId(principal);
+        var user = await repo.Users.AsNoTracking().FirstOrDefaultAsync(u => u.Id == userId && u.IsActive, ct);
+        if (user is null) return Results.NotFound();
+        return Results.Ok(new AdminAccountDto(user.Id, user.FullName, user.Phone, user.Email));
+    }
+
+    public async Task<IResult> UpdateMyAdminAccountAsync(
+        UpdateAdminAccountRequest body,
+        ClaimsPrincipal principal,
+        CancellationToken ct = default)
+    {
+        if (!principal.IsInRole(nameof(UserRole.Admin))) return Results.Forbid();
+
+        var phone = body.Phone.Trim();
+        if (string.IsNullOrWhiteSpace(phone))
+            return Results.BadRequest(new { error = "Mobile number or login ID is required." });
+
+        var email = EmailValidation.Normalize(body.Email);
+        if (email is not null && !EmailValidation.IsValid(email))
+            return Results.BadRequest(new { error = "Enter a valid email address." });
+
+        var userId = GetUserId(principal);
+        var user = await repo.Users.FirstOrDefaultAsync(u => u.Id == userId && u.IsActive, ct);
+        if (user is null) return Results.NotFound();
+
+        var loginPhone = PhoneValidation.PhoneForLoginLookup(phone);
+        if (await repo.Users.AnyAsync(u => u.Phone == loginPhone && u.Id != userId, ct))
+            return Results.BadRequest(new { error = "Another account already uses this mobile or login ID." });
+
+        if (email is not null && await repo.Users.AnyAsync(u => u.Email == email && u.Id != userId, ct))
+            return Results.BadRequest(new { error = "Another account already uses this email." });
+
+        user.Phone = loginPhone;
+        user.Email = email;
+        await repo.SaveChangesAsync(ct);
+        return Results.Ok(new AdminAccountDto(user.Id, user.FullName, user.Phone, user.Email));
+    }
+
+    public async Task<IResult> ForgotPasswordAsync(ForgotPasswordRequest body, CancellationToken ct = default)
+    {
+        const string okMessage = "If an account exists for that email, a password reset link has been sent.";
+
+        var email = EmailValidation.Normalize(body.Email);
+        if (!EmailValidation.IsValid(email))
+            return Results.BadRequest(new { error = "Enter a valid email address." });
+
+        var user = await repo.Users.FirstOrDefaultAsync(
+            u => u.Email == email && u.IsActive && u.Role == UserRole.Admin,
+            ct);
+
+        if (user is null || string.IsNullOrEmpty(user.Email))
+            return Results.Ok(new { message = okMessage });
+
+        var now = DateTime.UtcNow;
+        var activeTokens = await repo.PasswordResetTokens
+            .Where(t => t.UserId == user.Id && t.UsedAtUtc == null && t.ExpiresAtUtc > now)
+            .ToListAsync(ct);
+        foreach (var t in activeTokens)
+            t.UsedAtUtc = now;
+
+        var rawToken = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32))
+            .TrimEnd('=')
+            .Replace('+', '-')
+            .Replace('/', '_');
+
+        await repo.AddAsync(new PasswordResetToken
+        {
+            UserId = user.Id,
+            TokenHash = HashResetToken(rawToken),
+            ExpiresAtUtc = now.AddHours(1),
+            CreatedAtUtc = now,
+        }, ct);
+        await repo.SaveChangesAsync(ct);
+
+        var webUrl = appOptions.Value.PublicWebUrl.TrimEnd('/');
+        var resetLink = $"{webUrl}/reset-password?token={Uri.EscapeDataString(rawToken)}";
+        try
+        {
+            await emailSender.SendPasswordResetAsync(user.Email, user.FullName, resetLink, ct);
+        }
+        catch (Exception)
+        {
+            return Results.Json(
+                new { error = "Could not send the reset email. Check SMTP settings (Gmail needs an App Password) and restart the API container after changing .env." },
+                statusCode: StatusCodes.Status503ServiceUnavailable);
+        }
+
+        return Results.Ok(new { message = okMessage });
+    }
+
+    public async Task<IResult> ResetPasswordWithTokenAsync(ResetPasswordWithTokenRequest body, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(body.Token))
+            return Results.BadRequest(new { error = "Reset token is required." });
+        if (string.IsNullOrWhiteSpace(body.NewPassword) || body.NewPassword.Length < 6)
+            return Results.BadRequest(new { error = "New password must be at least 6 characters." });
+
+        var hash = HashResetToken(body.Token.Trim());
+        var now = DateTime.UtcNow;
+        var tokenRow = await repo.PasswordResetTokens
+            .Include(t => t.User)
+            .FirstOrDefaultAsync(t => t.TokenHash == hash && t.UsedAtUtc == null && t.ExpiresAtUtc > now, ct);
+
+        if (tokenRow?.User is null || !tokenRow.User.IsActive)
+            return Results.BadRequest(new { error = "This reset link is invalid or has expired." });
+
+        tokenRow.User.PasswordHash = BCrypt.Net.BCrypt.HashPassword(body.NewPassword);
+        tokenRow.UsedAtUtc = now;
+
+        var otherActive = await repo.PasswordResetTokens
+            .Where(t => t.UserId == tokenRow.UserId && t.Id != tokenRow.Id && t.UsedAtUtc == null)
+            .ToListAsync(ct);
+        foreach (var t in otherActive)
+            t.UsedAtUtc = now;
+
+        await repo.SaveChangesAsync(ct);
+        return Results.Ok(new { message = "Password updated. You can sign in with your new password." });
+    }
+
+    public async Task<IResult> ResetStaffPasswordAsync(
+        int id,
+        ResetPasswordRequest body,
+        ClaimsPrincipal principal,
+        CancellationToken ct = default)
+    {
+        var err = ValidateNewPassword(body.NewPassword);
+        if (err is not null) return err;
+
+        if (!principal.IsInRole(nameof(UserRole.Admin)) && !principal.IsInRole(nameof(UserRole.BranchManager)))
+            return Results.Forbid();
+
+        var staff = await repo.Users.FirstOrDefaultAsync(u => u.Id == id && u.Role == UserRole.Staff, ct);
+        if (staff is null) return Results.NotFound();
+
+        if (principal.IsInRole(nameof(UserRole.BranchManager)))
+        {
+            var (branchId, branchErr) = TryGetBranchId(principal, "Branch manager must have a branch assigned.");
+            if (branchErr is not null) return branchErr;
+            if (staff.BranchId != branchId) return Results.Forbid();
+        }
+
+        staff.PasswordHash = BCrypt.Net.BCrypt.HashPassword(body.NewPassword);
+        await repo.SaveChangesAsync(ct);
+        return Results.NoContent();
+    }
+
+    public async Task<IResult> ResetBranchManagerPasswordAsync(
+        int id,
+        ResetPasswordRequest body,
+        ClaimsPrincipal principal,
+        CancellationToken ct = default)
+    {
+        if (!principal.IsInRole(nameof(UserRole.Admin))) return Results.Forbid();
+
+        var err = ValidateNewPassword(body.NewPassword);
+        if (err is not null) return err;
+
+        var mgr = await repo.Users.FirstOrDefaultAsync(u => u.Id == id && u.Role == UserRole.BranchManager, ct);
+        if (mgr is null) return Results.NotFound();
+
+        mgr.PasswordHash = BCrypt.Net.BCrypt.HashPassword(body.NewPassword);
+        await repo.SaveChangesAsync(ct);
+        return Results.NoContent();
+    }
+
+    public async Task<IResult> ResetDriverPasswordAsync(
+        int driverProfileId,
+        ResetPasswordRequest body,
+        ClaimsPrincipal principal,
+        CancellationToken ct = default)
+    {
+        var err = ValidateNewPassword(body.NewPassword);
+        if (err is not null) return err;
+
+        if (!principal.IsInRole(nameof(UserRole.Admin)) && !principal.IsInRole(nameof(UserRole.BranchManager)))
+            return Results.Forbid();
+
+        var profile = await repo.DriverProfiles
+            .Include(d => d.User)
+            .FirstOrDefaultAsync(d => d.Id == driverProfileId, ct);
+        if (profile?.User is null) return Results.NotFound();
+
+        if (principal.IsInRole(nameof(UserRole.BranchManager)))
+        {
+            var (branchId, branchErr) = TryGetBranchId(principal, "Branch manager must have a branch assigned.");
+            if (branchErr is not null) return branchErr;
+            if (profile.User.BranchId != branchId) return Results.Forbid();
+        }
+
+        profile.User.PasswordHash = BCrypt.Net.BCrypt.HashPassword(body.NewPassword);
+        await repo.SaveChangesAsync(ct);
+        return Results.NoContent();
     }
 
     public async Task<IResult> RegisterDriverAsync(RegisterDriverRequest body, CancellationToken ct = default)
@@ -1740,6 +1971,16 @@ public class TransportService(ITransportRepository repo, TokenService tokens) : 
             return (null, Results.BadRequest(new { error = message }));
         return (branchId, null);
     }
+
+    private static IResult? ValidateNewPassword(string? newPassword)
+    {
+        if (string.IsNullOrWhiteSpace(newPassword) || newPassword.Length < 6)
+            return Results.BadRequest(new { error = "New password must be at least 6 characters." });
+        return null;
+    }
+
+    private static string HashResetToken(string token) =>
+        Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(token)));
 
     private static int GetUserId(ClaimsPrincipal principal)
     {

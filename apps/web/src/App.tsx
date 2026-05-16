@@ -7,6 +7,7 @@ import {
   Routes,
   useLocation,
   useNavigate,
+  useSearchParams,
 } from 'react-router-dom'
 import {
   HubConnection,
@@ -18,7 +19,6 @@ import {
   BarChart3,
   Building2,
   Check,
-  LayoutDashboard,
   LogOut,
   MapPin,
   Package,
@@ -31,6 +31,7 @@ import {
   UserCog,
   Users,
   Wallet,
+  KeyRound,
 } from 'lucide-react'
 import { GoogleMap, LoadScript, Marker } from '@react-google-maps/api'
 import L from 'leaflet'
@@ -50,6 +51,76 @@ function formatMoneyDisplay(value: number): string {
 function toMoneyCents(value: number): number {
   if (!Number.isFinite(value)) return 0
   return Math.round(value * 100) / 100
+}
+
+const LIST_PAGE_SIZE = 10
+
+function useListPagination<T>(items: T[], pageSize = LIST_PAGE_SIZE) {
+  const [page, setPage] = useState(1)
+  const total = items.length
+  const totalPages = Math.max(1, Math.ceil(total / pageSize))
+
+  useEffect(() => {
+    setPage(1)
+  }, [total])
+
+  useEffect(() => {
+    if (page > totalPages) setPage(totalPages)
+  }, [page, totalPages])
+
+  const safePage = Math.min(page, totalPages)
+  const pageItems = useMemo(() => {
+    const start = (safePage - 1) * pageSize
+    return items.slice(start, start + pageSize)
+  }, [items, safePage, pageSize])
+
+  return { page: safePage, setPage, pageItems, totalPages, total, pageSize }
+}
+
+function ListPagination({
+  page,
+  totalPages,
+  total,
+  pageSize,
+  onPageChange,
+}: {
+  page: number
+  totalPages: number
+  total: number
+  pageSize: number
+  onPageChange: (p: number) => void
+}) {
+  if (total === 0) return null
+  const from = (page - 1) * pageSize + 1
+  const to = Math.min(page * pageSize, total)
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-800 bg-slate-900/50 px-4 py-3 text-sm text-slate-400">
+      <span>
+        Showing {from}–{to} of {total}
+      </span>
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          disabled={page <= 1}
+          onClick={() => onPageChange(page - 1)}
+          className="rounded-lg border border-slate-600 px-3 py-1 text-slate-300 hover:bg-slate-800 disabled:opacity-40"
+        >
+          Previous
+        </button>
+        <span className="min-w-[5rem] text-center text-slate-300">
+          Page {page} / {totalPages}
+        </span>
+        <button
+          type="button"
+          disabled={page >= totalPages}
+          onClick={() => onPageChange(page + 1)}
+          className="rounded-lg border border-slate-600 px-3 py-1 text-slate-300 hover:bg-slate-800 disabled:opacity-40"
+        >
+          Next
+        </button>
+      </div>
+    </div>
+  )
 }
 
 const leafletDefaultIcon = L.icon({
@@ -317,7 +388,12 @@ function LoginPage() {
         >
           Sign in
         </button>
-        <p className="mt-4 text-center text-xs text-slate-500">
+        <p className="mt-4 text-center text-sm">
+          <Link to="/forgot-password" className="text-violet-400 hover:text-violet-300">
+            Forgot password?
+          </Link>
+        </p>
+        <p className="mt-2 text-center text-xs text-slate-500">
           Defaults: admin / Admin123! Â· branchmanager / Manager123!
         </p>
       </form>
@@ -325,9 +401,287 @@ function LoginPage() {
   )
 }
 
+function ForgotPasswordPage() {
+  const [email, setEmail] = useState('')
+  const [error, setError] = useState<string | null>(null)
+  const [message, setMessage] = useState<string | null>(null)
+  const [sending, setSending] = useState(false)
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    setError(null)
+    setMessage(null)
+    setSending(true)
+    const res = await apiFetch('/api/auth/forgot-password', {
+      method: 'POST',
+      body: JSON.stringify({ email: email.trim() }),
+    })
+    setSending(false)
+    if (!res.ok) {
+      const j = await res.json().catch(() => ({}))
+      setError((j as { error?: string }).error ?? 'Could not send reset email.')
+      return
+    }
+    const j = (await res.json()) as { message?: string }
+    setMessage(j.message ?? 'If an account exists for that email, a password reset link has been sent.')
+    setEmail('')
+  }
+
+  return (
+    <div className="flex min-h-screen items-center justify-center bg-slate-950 px-4">
+      <form
+        onSubmit={submit}
+        className="w-full max-w-md rounded-2xl border border-slate-800 bg-slate-900/80 p-8 shadow-xl"
+      >
+        <h1 className="mb-2 text-center text-2xl font-semibold text-white">Forgot password</h1>
+        <p className="mb-6 text-center text-sm text-slate-400">
+          Enter the email on your admin account. We will send a reset link if it is registered.
+        </p>
+        <label className="mb-2 block text-sm text-slate-400">Email</label>
+        <input
+          type="email"
+          className="mb-6 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-white"
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+          required
+          autoComplete="email"
+        />
+        {error && <p className="mb-4 text-sm text-red-400">{error}</p>}
+        {message && <p className="mb-4 text-sm text-emerald-400">{message}</p>}
+        <button
+          type="submit"
+          disabled={sending}
+          className="w-full rounded-lg bg-violet-600 py-2 font-medium text-white hover:bg-violet-500 disabled:opacity-50"
+        >
+          {sending ? 'Sending…' : 'Send reset link'}
+        </button>
+        <p className="mt-4 text-center text-sm">
+          <Link to="/login" className="text-violet-400 hover:text-violet-300">
+            Back to sign in
+          </Link>
+        </p>
+      </form>
+    </div>
+  )
+}
+
+function ResetPasswordPage() {
+  const [searchParams] = useSearchParams()
+  const navigate = useNavigate()
+  const token = searchParams.get('token') ?? ''
+  const [newPassword, setNewPassword] = useState('')
+  const [confirmPassword, setConfirmPassword] = useState('')
+  const [error, setError] = useState<string | null>(null)
+  const [message, setMessage] = useState<string | null>(null)
+  const [saving, setSaving] = useState(false)
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    setError(null)
+    setMessage(null)
+    if (!token) {
+      setError('Reset link is invalid. Request a new link from the sign-in page.')
+      return
+    }
+    if (newPassword.length < 6) {
+      setError('New password must be at least 6 characters.')
+      return
+    }
+    if (newPassword !== confirmPassword) {
+      setError('Passwords do not match.')
+      return
+    }
+    setSaving(true)
+    const res = await apiFetch('/api/auth/reset-password', {
+      method: 'POST',
+      body: JSON.stringify({ token, newPassword }),
+    })
+    setSaving(false)
+    if (!res.ok) {
+      const j = await res.json().catch(() => ({}))
+      setError((j as { error?: string }).error ?? 'Could not reset password.')
+      return
+    }
+    const j = (await res.json()) as { message?: string }
+    setMessage(j.message ?? 'Password updated.')
+    setTimeout(() => navigate('/login'), 2000)
+  }
+
+  if (!token) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-slate-950 px-4">
+        <div className="w-full max-w-md rounded-2xl border border-slate-800 bg-slate-900/80 p-8 text-center shadow-xl">
+          <p className="mb-4 text-red-400">This reset link is invalid or missing.</p>
+          <Link to="/forgot-password" className="text-violet-400 hover:text-violet-300">
+            Request a new link
+          </Link>
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="flex min-h-screen items-center justify-center bg-slate-950 px-4">
+      <form
+        onSubmit={submit}
+        className="w-full max-w-md rounded-2xl border border-slate-800 bg-slate-900/80 p-8 shadow-xl"
+      >
+        <h1 className="mb-6 text-center text-2xl font-semibold text-white">Set new password</h1>
+        <label className="mb-2 block text-sm text-slate-400">New password</label>
+        <input
+          type="password"
+          className="mb-4 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-white"
+          value={newPassword}
+          onChange={(e) => setNewPassword(e.target.value)}
+          required
+          minLength={6}
+          autoComplete="new-password"
+        />
+        <label className="mb-2 block text-sm text-slate-400">Confirm password</label>
+        <input
+          type="password"
+          className="mb-6 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-white"
+          value={confirmPassword}
+          onChange={(e) => setConfirmPassword(e.target.value)}
+          required
+          minLength={6}
+          autoComplete="new-password"
+        />
+        {error && <p className="mb-4 text-sm text-red-400">{error}</p>}
+        {message && <p className="mb-4 text-sm text-emerald-400">{message}</p>}
+        <button
+          type="submit"
+          disabled={saving}
+          className="w-full rounded-lg bg-violet-600 py-2 font-medium text-white hover:bg-violet-500 disabled:opacity-50"
+        >
+          {saving ? 'Saving…' : 'Update password'}
+        </button>
+      </form>
+    </div>
+  )
+}
+
+function ResetUserPasswordButton({ apiPath, accountLabel }: { apiPath: string; accountLabel: string }) {
+  const [open, setOpen] = useState(false)
+  const [newPassword, setNewPassword] = useState('')
+  const [confirmPassword, setConfirmPassword] = useState('')
+  const [error, setError] = useState<string | null>(null)
+  const [success, setSuccess] = useState(false)
+  const [saving, setSaving] = useState(false)
+
+  const close = () => {
+    setOpen(false)
+    setNewPassword('')
+    setConfirmPassword('')
+    setError(null)
+    setSuccess(false)
+  }
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    setError(null)
+    setSuccess(false)
+    if (newPassword.length < 6) {
+      setError('Password must be at least 6 characters.')
+      return
+    }
+    if (newPassword !== confirmPassword) {
+      setError('Passwords do not match.')
+      return
+    }
+    setSaving(true)
+    const res = await apiFetch(apiPath, {
+      method: 'POST',
+      body: JSON.stringify({ newPassword }),
+    })
+    setSaving(false)
+    if (!res.ok) {
+      const j = await res.json().catch(() => ({}))
+      setError((j as { error?: string }).error ?? 'Could not reset password.')
+      return
+    }
+    setSuccess(true)
+    setNewPassword('')
+    setConfirmPassword('')
+  }
+
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => {
+          setOpen(true)
+          setError(null)
+          setSuccess(false)
+        }}
+        className="inline-flex items-center gap-1 rounded-lg border border-amber-800/50 px-2 py-1 text-xs text-amber-300 hover:bg-amber-950/40"
+      >
+        <KeyRound size={14} /> Reset password
+      </button>
+      {open && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
+          <form
+            onSubmit={submit}
+            className="w-full max-w-md rounded-2xl border border-slate-700 bg-slate-900 p-6 shadow-xl"
+          >
+            <h3 className="mb-2 text-lg font-medium text-white">Reset password</h3>
+            <p className="mb-4 text-sm text-slate-400">{accountLabel}</p>
+            <div className="space-y-3">
+              <div>
+                <label className="text-sm text-slate-400">New password</label>
+                <input
+                  type="password"
+                  className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-white"
+                  value={newPassword}
+                  onChange={(e) => setNewPassword(e.target.value)}
+                  required
+                  minLength={6}
+                />
+              </div>
+              <div>
+                <label className="text-sm text-slate-400">Confirm password</label>
+                <input
+                  type="password"
+                  className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-white"
+                  value={confirmPassword}
+                  onChange={(e) => setConfirmPassword(e.target.value)}
+                  required
+                  minLength={6}
+                />
+              </div>
+            </div>
+            {error && <p className="mt-3 text-sm text-red-400">{error}</p>}
+            {success && (
+              <p className="mt-3 text-sm text-emerald-400">Password updated successfully.</p>
+            )}
+            <div className="mt-4 flex flex-wrap gap-2">
+              <button
+                type="submit"
+                disabled={saving}
+                className="rounded-lg bg-violet-600 px-4 py-2 text-white hover:bg-violet-500 disabled:opacity-50"
+              >
+                {saving ? 'Saving…' : 'Set password'}
+              </button>
+              <button
+                type="button"
+                onClick={close}
+                className="rounded-lg border border-slate-600 px-4 py-2 text-slate-300 hover:bg-slate-800"
+              >
+                {success ? 'Close' : 'Cancel'}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+    </>
+  )
+}
+
 function Layout({ children }: { children: React.ReactNode }) {
   const navigate = useNavigate()
+  const { pathname } = useLocation()
   const role = localStorage.getItem('transport_role')
+  const wideMain = pathname === '/products'
 
   const logout = () => {
     localStorage.removeItem('transport_token')
@@ -380,11 +734,6 @@ function Layout({ children }: { children: React.ReactNode }) {
             </Link>
           )}
           {(role === 'Admin' || role === 'BranchManager') && (
-            <Link className="flex items-center gap-1 hover:text-violet-400" to="/qr">
-              <LayoutDashboard size={16} /> New product
-            </Link>
-          )}
-          {(role === 'Admin' || role === 'BranchManager') && (
             <Link className="flex items-center gap-1 hover:text-violet-400" to="/trips">
               <Truck size={16} /> Trips
             </Link>
@@ -394,6 +743,9 @@ function Layout({ children }: { children: React.ReactNode }) {
               <Wallet size={16} /> Driver earnings
             </Link>
           )}
+          <Link className="flex items-center gap-1 hover:text-violet-400" to="/account">
+            <KeyRound size={16} /> Account
+          </Link>
           <span className="text-slate-500">({role})</span>
           <button
             type="button"
@@ -404,7 +756,11 @@ function Layout({ children }: { children: React.ReactNode }) {
           </button>
         </nav>
       </header>
-      <main className="mx-auto max-w-5xl px-6 py-8">{children}</main>
+      <main
+        className={`mx-auto px-6 py-8 ${wideMain ? 'max-w-[90rem]' : 'max-w-5xl'}`}
+      >
+        {children}
+      </main>
     </div>
   )
 }
@@ -506,6 +862,9 @@ function ApprovalsPage() {
     </option>
   ))
 
+  const pendingPag = useListPagination(rows)
+  const approvedPag = useListPagination(approved)
+
   if (loading) return <p className="text-slate-400">Loadingâ€¦</p>
 
   return (
@@ -534,7 +893,7 @@ function ApprovalsPage() {
               </tr>
             </thead>
             <tbody>
-              {rows.map((r) => {
+              {pendingPag.pageItems.map((r) => {
                 const e = getDriverEdit(r)
                 return (
                 <tr key={r.id} className="border-t border-slate-800">
@@ -581,12 +940,16 @@ function ApprovalsPage() {
                       >
                         <Check size={16} /> Approve
                       </button>
+                      <ResetUserPasswordButton
+                        apiPath={`/api/drivers/${r.id}/reset-password`}
+                        accountLabel={`Set a new password for driver ${r.fullName} (${r.phone}).`}
+                      />
                     </div>
                   </td>
                 </tr>
                 )
               })}
-              {rows.length === 0 && (
+              {pendingPag.total === 0 && (
                 <tr>
                   <td className="px-4 py-6 text-slate-500" colSpan={5}>
                     No pending drivers.
@@ -595,6 +958,13 @@ function ApprovalsPage() {
               )}
             </tbody>
           </table>
+          <ListPagination
+            page={pendingPag.page}
+            totalPages={pendingPag.totalPages}
+            total={pendingPag.total}
+            pageSize={pendingPag.pageSize}
+            onPageChange={pendingPag.setPage}
+          />
         </div>
       </div>
 
@@ -618,7 +988,7 @@ function ApprovalsPage() {
               </tr>
             </thead>
             <tbody>
-              {approved.map((r) => {
+              {approvedPag.pageItems.map((r) => {
                 const e = getDriverEdit(r)
                 return (
                 <tr key={r.id} className="border-t border-slate-800">
@@ -656,19 +1026,25 @@ function ApprovalsPage() {
                     )}
                   </td>
                   <td className="px-4 py-3 text-right">
-                    <button
-                      type="button"
-                      disabled={savingDriverId === r.id}
-                      onClick={() => void saveDriver(r)}
-                      className="rounded-lg border border-violet-700/60 px-3 py-1 text-xs text-violet-200 hover:bg-violet-900/40 disabled:opacity-50"
-                    >
-                      {savingDriverId === r.id ? 'Saving…' : 'Save'}
-                    </button>
+                    <div className="inline-flex flex-wrap justify-end gap-2">
+                      <button
+                        type="button"
+                        disabled={savingDriverId === r.id}
+                        onClick={() => void saveDriver(r)}
+                        className="rounded-lg border border-violet-700/60 px-3 py-1 text-xs text-violet-200 hover:bg-violet-900/40 disabled:opacity-50"
+                      >
+                        {savingDriverId === r.id ? 'Saving…' : 'Save'}
+                      </button>
+                      <ResetUserPasswordButton
+                        apiPath={`/api/drivers/${r.id}/reset-password`}
+                        accountLabel={`Set a new password for driver ${r.fullName} (${r.phone}).`}
+                      />
+                    </div>
                   </td>
                 </tr>
                 )
               })}
-              {approved.length === 0 && (
+              {approvedPag.total === 0 && (
                 <tr>
                   <td className="px-4 py-6 text-slate-500" colSpan={6}>
                     No approved drivers yet. Approve a driver above to see them here.
@@ -677,6 +1053,13 @@ function ApprovalsPage() {
               )}
             </tbody>
           </table>
+          <ListPagination
+            page={approvedPag.page}
+            totalPages={approvedPag.totalPages}
+            total={approvedPag.total}
+            pageSize={approvedPag.pageSize}
+            onPageChange={approvedPag.setPage}
+          />
         </div>
       </div>
     </div>
@@ -702,6 +1085,8 @@ function BranchTable({
   onEdit: (b: Branch) => void
   onRemove: (id: number) => void
 }) {
+  const { page, setPage, pageItems, totalPages, total, pageSize } = useListPagination(rows)
+
   return (
     <div className="mb-8">
       <h3 className="mb-1 text-sm font-semibold text-violet-300">{title}</h3>
@@ -718,7 +1103,7 @@ function BranchTable({
             </tr>
           </thead>
           <tbody>
-            {rows.map((b) => (
+            {pageItems.map((b) => (
               <tr
                 key={b.id}
                 className={`border-t border-slate-800 ${selectedBranchId === b.id ? 'bg-violet-950/30' : ''}`}
@@ -760,7 +1145,7 @@ function BranchTable({
                 </td>
               </tr>
             ))}
-            {rows.length === 0 && (
+            {total === 0 && (
               <tr>
                 <td className="px-4 py-6 text-slate-500" colSpan={5}>
                   No branches in this category.
@@ -769,6 +1154,13 @@ function BranchTable({
             )}
           </tbody>
         </table>
+        <ListPagination
+          page={page}
+          totalPages={totalPages}
+          total={total}
+          pageSize={pageSize}
+          onPageChange={setPage}
+        />
       </div>
     </div>
   )
@@ -962,6 +1354,8 @@ function BranchesPage() {
     setPayAmount('')
     setPayNote('')
   }
+
+  const paymentsPag = useListPagination(settlement?.recentPayments ?? [])
 
   if (loading) return <p className="text-slate-400">Loading...</p>
 
@@ -1262,11 +1656,11 @@ function BranchesPage() {
                 </form>
               )}
 
-              {settlement.recentPayments.length > 0 && (
+              {paymentsPag.total > 0 && (
                 <div>
                   <h4 className="mb-2 text-sm font-medium text-slate-400">Recent payments</h4>
                   <ul className="space-y-2 text-sm">
-                    {settlement.recentPayments.map((p) => (
+                    {paymentsPag.pageItems.map((p) => (
                       <li
                         key={p.id}
                         className="flex flex-wrap justify-between gap-2 rounded-lg border border-slate-800 px-3 py-2"
@@ -1286,6 +1680,13 @@ function BranchesPage() {
                       </li>
                     ))}
                   </ul>
+                  <ListPagination
+                    page={paymentsPag.page}
+                    totalPages={paymentsPag.totalPages}
+                    total={paymentsPag.total}
+                    pageSize={paymentsPag.pageSize}
+                    onPageChange={paymentsPag.setPage}
+                  />
                 </div>
               )}
             </>
@@ -1334,6 +1735,8 @@ function StaffPage() {
     const bid = Number(localStorage.getItem('transport_branch_id'))
     if (Number.isFinite(bid) && bid > 0) setNewBranchId(bid)
   }, [isBranchManager, branches])
+
+  const staffPag = useListPagination(staffRows)
 
   if (!isAdmin && !isBranchManager) return <Navigate to="/map" replace />
   if (loading) return <p className="text-slate-400">Loadingâ€¦</p>
@@ -1514,7 +1917,7 @@ function StaffPage() {
             </tr>
           </thead>
           <tbody>
-            {staffRows.map((s) => (
+            {staffPag.pageItems.map((s) => (
               <tr key={s.id} className="border-t border-slate-800">
                 <td className="px-4 py-3">{s.fullName}</td>
                 <td className="px-4 py-3">{s.phone}</td>
@@ -1527,27 +1930,33 @@ function StaffPage() {
                   )}
                 </td>
                 <td className="px-4 py-3 text-right">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setError(null)
-                      setEditing(s)
-                    }}
-                    className="mr-2 inline-flex items-center gap-1 rounded-lg border border-slate-600 px-2 py-1 text-slate-300 hover:bg-slate-800"
-                  >
-                    <Pencil size={14} /> Edit
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => void removeStaff(s)}
-                    className="inline-flex items-center gap-1 rounded-lg border border-red-900/50 px-2 py-1 text-red-400 hover:bg-red-950/40"
-                  >
-                    <Trash2 size={14} /> Delete
-                  </button>
+                  <div className="inline-flex flex-wrap justify-end gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setError(null)
+                        setEditing(s)
+                      }}
+                      className="inline-flex items-center gap-1 rounded-lg border border-slate-600 px-2 py-1 text-slate-300 hover:bg-slate-800"
+                    >
+                      <Pencil size={14} /> Edit
+                    </button>
+                    <ResetUserPasswordButton
+                      apiPath={`/api/staff/${s.id}/reset-password`}
+                      accountLabel={`Set a new password for ${s.fullName} (${s.phone}).`}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => void removeStaff(s)}
+                      className="inline-flex items-center gap-1 rounded-lg border border-red-900/50 px-2 py-1 text-red-400 hover:bg-red-950/40"
+                    >
+                      <Trash2 size={14} /> Delete
+                    </button>
+                  </div>
                 </td>
               </tr>
             ))}
-            {staffRows.length === 0 && (
+            {staffPag.total === 0 && (
               <tr>
                 <td className="px-4 py-8 text-center text-slate-500" colSpan={5}>
                   No staff accounts found.
@@ -1556,6 +1965,13 @@ function StaffPage() {
             )}
           </tbody>
         </table>
+        <ListPagination
+          page={staffPag.page}
+          totalPages={staffPag.totalPages}
+          total={staffPag.total}
+          pageSize={staffPag.pageSize}
+          onPageChange={staffPag.setPage}
+        />
       </div>
 
       {editing && (
@@ -1655,6 +2071,8 @@ function BranchManagersPage() {
     if (role !== 'Admin') return
     void load()
   }, [load, role])
+
+  const managersPag = useListPagination(rows)
 
   if (role !== 'Admin') return <Navigate to="/map" replace />
   if (loading) return <p className="text-slate-400">Loadingâ€¦</p>
@@ -1825,7 +2243,7 @@ function BranchManagersPage() {
             </tr>
           </thead>
           <tbody>
-            {rows.map((s) => (
+            {managersPag.pageItems.map((s) => (
               <tr key={s.id} className="border-t border-slate-800">
                 <td className="px-4 py-3">{s.fullName}</td>
                 <td className="px-4 py-3">{s.phone}</td>
@@ -1838,27 +2256,33 @@ function BranchManagersPage() {
                   )}
                 </td>
                 <td className="px-4 py-3 text-right">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setError(null)
-                      setEditing(s)
-                    }}
-                    className="mr-2 inline-flex items-center gap-1 rounded-lg border border-slate-600 px-2 py-1 text-slate-300 hover:bg-slate-800"
-                  >
-                    <Pencil size={14} /> Edit
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => void remove(s)}
-                    className="inline-flex items-center gap-1 rounded-lg border border-red-900/50 px-2 py-1 text-red-400 hover:bg-red-950/40"
-                  >
-                    <Trash2 size={14} /> Delete
-                  </button>
+                  <div className="inline-flex flex-wrap justify-end gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setError(null)
+                        setEditing(s)
+                      }}
+                      className="inline-flex items-center gap-1 rounded-lg border border-slate-600 px-2 py-1 text-slate-300 hover:bg-slate-800"
+                    >
+                      <Pencil size={14} /> Edit
+                    </button>
+                    <ResetUserPasswordButton
+                      apiPath={`/api/branch-managers/${s.id}/reset-password`}
+                      accountLabel={`Set a new password for ${s.fullName} (${s.phone}).`}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => void remove(s)}
+                      className="inline-flex items-center gap-1 rounded-lg border border-red-900/50 px-2 py-1 text-red-400 hover:bg-red-950/40"
+                    >
+                      <Trash2 size={14} /> Delete
+                    </button>
+                  </div>
                 </td>
               </tr>
             ))}
-            {rows.length === 0 && (
+            {managersPag.total === 0 && (
               <tr>
                 <td className="px-4 py-8 text-center text-slate-500" colSpan={5}>
                   No branch manager accounts yet.
@@ -1867,6 +2291,13 @@ function BranchManagersPage() {
             )}
           </tbody>
         </table>
+        <ListPagination
+          page={managersPag.page}
+          totalPages={managersPag.totalPages}
+          total={managersPag.total}
+          pageSize={managersPag.pageSize}
+          onPageChange={managersPag.setPage}
+        />
       </div>
 
       {editing && (
@@ -2113,6 +2544,7 @@ function LiveMapPage() {
   }, [selectedId, drivers])
 
   const mapContainerStyle = useMemo(() => ({ width: '100%', height: '420px' }), [])
+  const driversPag = useListPagination(drivers)
 
   return (
     <div>
@@ -2177,7 +2609,7 @@ function LiveMapPage() {
             report GPS.
           </p>
           <ul className="max-h-[360px] space-y-1 overflow-y-auto text-sm">
-            {drivers.map((d) => {
+            {driversPag.pageItems.map((d) => {
               const ok = hasDriverPosition(d)
               const active = selectedId === d.driverProfileId
               return (
@@ -2213,13 +2645,20 @@ function LiveMapPage() {
                 </li>
               )
             })}
-            {drivers.length === 0 && (
+            {driversPag.total === 0 && (
               <li className="rounded-lg border border-dashed border-slate-700 px-3 py-4 text-slate-500">
                 No drivers in scope. Admins see all approved drivers; branch managers and staff see their branch.
                 Positions update when drivers run the mobile app with location on.
               </li>
             )}
           </ul>
+          <ListPagination
+            page={driversPag.page}
+            totalPages={driversPag.totalPages}
+            total={driversPag.total}
+            pageSize={driversPag.pageSize}
+            onPageChange={driversPag.setPage}
+          />
         </div>
       </div>
     </div>
@@ -2458,6 +2897,8 @@ function ProductsPage() {
 
   const closeDetail = () => setDetail(null)
 
+  const productsPag = useListPagination(products)
+
   if (loading) return <p className="text-slate-400">Loading…</p>
 
   return (
@@ -2542,25 +2983,27 @@ function ProductsPage() {
       )}
 
       <div className="no-print overflow-x-auto rounded-xl border border-slate-800">
-        <table className="w-full min-w-[880px] text-left text-sm">
+        <table className="w-full min-w-[1320px] text-left text-sm">
           <thead className="bg-slate-900 text-slate-400">
             <tr>
-              <th className="px-3 py-3">Tracking</th>
-              <th className="px-3 py-3">Description</th>
-              <th className="px-3 py-3">Origin branch</th>
-              <th className="px-3 py-3">Destination branch</th>
-              {isBranchManager && <th className="px-3 py-3">Your scope</th>}
-              <th className="px-3 py-3">Price</th>
-              <th className="px-3 py-3">Payment mode</th>
-              <th className="px-3 py-3">Origin received</th>
-              <th className="px-3 py-3">Destination received</th>
-              <th className="px-3 py-3">Due</th>
-              <th className="px-3 py-3">Status</th>
-              <th className="px-3 py-3 text-right">Actions</th>
+              <th className="min-w-[10rem] whitespace-nowrap px-4 py-3.5">Tracking</th>
+              <th className="min-w-[14rem] px-4 py-3.5">Description</th>
+              <th className="min-w-[9rem] whitespace-nowrap px-4 py-3.5">Origin branch</th>
+              <th className="min-w-[9rem] whitespace-nowrap px-4 py-3.5">Destination branch</th>
+              {isBranchManager && (
+                <th className="min-w-[7rem] whitespace-nowrap px-4 py-3.5">Your scope</th>
+              )}
+              <th className="min-w-[5.5rem] whitespace-nowrap px-4 py-3.5 text-right">Price</th>
+              <th className="min-w-[8rem] whitespace-nowrap px-4 py-3.5">Payment mode</th>
+              <th className="min-w-[7rem] whitespace-nowrap px-4 py-3.5 text-right">Origin received</th>
+              <th className="min-w-[7.5rem] whitespace-nowrap px-4 py-3.5 text-right">Dest. received</th>
+              <th className="min-w-[5rem] whitespace-nowrap px-4 py-3.5 text-right">Due</th>
+              <th className="min-w-[6.5rem] whitespace-nowrap px-4 py-3.5">Status</th>
+              <th className="min-w-[15rem] whitespace-nowrap px-4 py-3.5 text-right">Actions</th>
             </tr>
           </thead>
           <tbody>
-            {products.map((p) => {
+            {productsPag.pageItems.map((p) => {
               const badge = getPaymentBadge(p)
               return (
                 <tr
@@ -2568,35 +3011,42 @@ function ProductsPage() {
                   className="cursor-pointer border-t border-slate-800 hover:bg-slate-900/60"
                   onClick={() => void openDetail(p)}
                 >
-                <td className="px-3 py-2 font-mono text-xs text-white">{p.trackingNumber}</td>
-                <td className="max-w-[140px] truncate px-3 py-2 text-slate-300" title={p.description}>
+                <td className="whitespace-nowrap px-4 py-3 font-mono text-sm text-white">
+                  {p.trackingNumber}
+                </td>
+                <td className="max-w-[18rem] px-4 py-3 leading-snug text-slate-300" title={p.description}>
                   {p.description}
                 </td>
-                <td className="px-3 py-2 text-xs text-slate-300">{p.originBranchName}</td>
-                <td className="px-3 py-2 text-xs text-slate-300">{p.destinationBranchName}</td>
-                {isBranchManager && <td className="px-3 py-2 text-xs text-violet-300">{branchScopeText(p)}</td>}
-                <td className="px-3 py-2 text-slate-300">{p.shippingPrice.toFixed(2)}</td>
-                <td className="px-3 py-2">
+                <td className="whitespace-nowrap px-4 py-3 text-slate-300">{p.originBranchName}</td>
+                <td className="whitespace-nowrap px-4 py-3 text-slate-300">{p.destinationBranchName}</td>
+                {isBranchManager && (
+                  <td className="whitespace-nowrap px-4 py-3 text-violet-300">{branchScopeText(p)}</td>
+                )}
+                <td className="whitespace-nowrap px-4 py-3 text-right font-mono text-slate-300">
+                  {p.shippingPrice.toFixed(2)}
+                </td>
+                <td className="whitespace-nowrap px-4 py-3">
                   <span className={badge.className}>{badge.label}</span>
                 </td>
-                <td className="px-3 py-2 font-mono text-xs text-emerald-300">
+                <td className="whitespace-nowrap px-4 py-3 text-right font-mono text-emerald-300">
                   {Number(p.amountReceivedAtOrigin ?? 0).toFixed(2)}
                 </td>
-                <td className="px-3 py-2 font-mono text-xs text-cyan-300">
+                <td className="whitespace-nowrap px-4 py-3 text-right font-mono text-cyan-300">
                   {Number(p.amountReceivedAtDestination ?? 0).toFixed(2)}
                 </td>
-                <td className="px-3 py-2 font-mono text-xs text-amber-300">
+                <td className="whitespace-nowrap px-4 py-3 text-right font-mono text-amber-300">
                   {Math.max(0, Number(p.dueAmount ?? 0)).toFixed(2)}
                 </td>
-                <td className="px-3 py-2 text-slate-400">{p.status}</td>
-                <td className="px-3 py-2 text-right" onClick={(e) => e.stopPropagation()}>
+                <td className="whitespace-nowrap px-4 py-3 text-slate-400">{p.status}</td>
+                <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
+                  <div className="flex flex-wrap justify-end gap-1.5">
                   <button
                     type="button"
                     onClick={() => {
                       setFormError(null)
                       setReprint({ trackingNumber: p.trackingNumber, shippingPrice: p.shippingPrice })
                     }}
-                    className="mr-1 inline-flex items-center gap-1 rounded border border-slate-600 px-2 py-1 text-xs text-slate-300 hover:bg-slate-800"
+                    className="inline-flex items-center gap-1 rounded border border-slate-600 px-2.5 py-1.5 text-xs text-slate-300 hover:bg-slate-800"
                   >
                     <Printer size={12} /> QR
                   </button>
@@ -2606,7 +3056,7 @@ function ProductsPage() {
                       setFormError(null)
                       setEditing(p)
                     }}
-                    className="mr-1 inline-flex items-center gap-1 rounded border border-slate-600 px-2 py-1 text-xs text-slate-300 hover:bg-slate-800"
+                    className="inline-flex items-center gap-1 rounded border border-slate-600 px-2.5 py-1.5 text-xs text-slate-300 hover:bg-slate-800"
                   >
                     <Pencil size={12} /> Edit
                   </button>
@@ -2614,7 +3064,7 @@ function ProductsPage() {
                     <button
                       type="button"
                       onClick={() => openDeliver(p)}
-                      className="mr-1 inline-flex items-center gap-1 rounded border border-emerald-700/50 px-2 py-1 text-xs text-emerald-300 hover:bg-emerald-900/30"
+                      className="inline-flex items-center gap-1 rounded border border-emerald-700/50 px-2.5 py-1.5 text-xs text-emerald-300 hover:bg-emerald-900/30"
                     >
                       Deliver
                     </button>
@@ -2622,15 +3072,16 @@ function ProductsPage() {
                   <button
                     type="button"
                     onClick={() => void remove(p)}
-                    className="inline-flex items-center gap-1 rounded border border-red-900/40 px-2 py-1 text-xs text-red-400 hover:bg-red-950/30"
+                    className="inline-flex items-center gap-1 rounded border border-red-900/40 px-2.5 py-1.5 text-xs text-red-400 hover:bg-red-950/30"
                   >
                     <Trash2 size={12} /> Delete
                   </button>
+                  </div>
                 </td>
                 </tr>
               )
             })}
-            {products.length === 0 && (
+            {productsPag.total === 0 && (
               <tr>
                 <td className="px-4 py-8 text-center text-slate-500" colSpan={isBranchManager ? 12 : 11}>
                   {activeSearch ? (
@@ -2649,6 +3100,13 @@ function ProductsPage() {
             )}
           </tbody>
         </table>
+        <ListPagination
+          page={productsPag.page}
+          totalPages={productsPag.totalPages}
+          total={productsPag.total}
+          pageSize={productsPag.pageSize}
+          onPageChange={productsPag.setPage}
+        />
       </div>
 
       {(detailLoading || detail) && (
@@ -3453,6 +3911,10 @@ function ReportsPage() {
     void load()
   }, [load, isAdmin, isBranchManager])
 
+  const collectionsPag = useListPagination(rows)
+  const bookingPag = useListPagination(bookingReport?.rows ?? [])
+  const paymentPag = useListPagination(paymentRows)
+
   if (!isAdmin && !isBranchManager) return <Navigate to="/map" replace />
 
   return (
@@ -3556,7 +4018,7 @@ function ReportsPage() {
             </tr>
           </thead>
           <tbody>
-            {rows.map((r) => (
+            {collectionsPag.pageItems.map((r) => (
               <tr key={r.branchId} className="border-t border-slate-800">
                 <td className="px-4 py-3 text-slate-200">{r.branchName}</td>
                 <td className="px-4 py-3 text-right font-mono text-emerald-200">
@@ -3570,7 +4032,7 @@ function ReportsPage() {
                 </td>
               </tr>
             ))}
-            {rows.length === 0 && (
+            {collectionsPag.total === 0 && (
               <tr>
                 <td className="px-4 py-8 text-center text-slate-500" colSpan={4}>
                   No delivered shipments yet for this scope.
@@ -3579,6 +4041,13 @@ function ReportsPage() {
             )}
           </tbody>
         </table>
+        <ListPagination
+          page={collectionsPag.page}
+          totalPages={collectionsPag.totalPages}
+          total={collectionsPag.total}
+          pageSize={collectionsPag.pageSize}
+          onPageChange={collectionsPag.setPage}
+        />
       </div>
 
       <div className="mt-8 overflow-x-auto rounded-xl border border-slate-800">
@@ -3607,21 +4076,23 @@ function ReportsPage() {
             </tr>
           </thead>
           <tbody>
-            {bookingReport?.rows.map((r, idx) => (
+            {bookingPag.pageItems.map((r, idx) => {
+              const globalIdx = (bookingPag.page - 1) * bookingPag.pageSize + idx
+              return (
               <tr key={r.destinationBranchId} className="border-t border-slate-800">
                 <td className="px-4 py-3">
                   <span
                     className={`inline-flex min-w-[2rem] items-center justify-center rounded-full px-2 py-0.5 text-xs font-semibold ${
-                      idx === 0
+                      globalIdx === 0
                         ? 'bg-violet-600 text-white'
-                        : idx === 1
+                        : globalIdx === 1
                           ? 'bg-slate-600 text-white'
-                          : idx === 2
+                          : globalIdx === 2
                             ? 'bg-amber-800/80 text-amber-100'
                             : 'border border-slate-600 text-slate-400'
                     }`}
                   >
-                    #{idx + 1}
+                    #{globalIdx + 1}
                   </span>
                 </td>
                 <td className="px-4 py-3 text-slate-200">{r.destinationBranchName}</td>
@@ -3630,8 +4101,9 @@ function ReportsPage() {
                   {formatMoneyDisplay(Number(r.totalShippingPrice))}
                 </td>
               </tr>
-            ))}
-            {(!bookingReport || bookingReport.rows.length === 0) && !loading && (
+              )
+            })}
+            {bookingPag.total === 0 && !loading && (
               <tr>
                 <td className="px-4 py-8 text-center text-slate-500" colSpan={4}>
                   No pending products at this origin for the selected date range.
@@ -3640,6 +4112,13 @@ function ReportsPage() {
             )}
           </tbody>
         </table>
+        <ListPagination
+          page={bookingPag.page}
+          totalPages={bookingPag.totalPages}
+          total={bookingPag.total}
+          pageSize={bookingPag.pageSize}
+          onPageChange={bookingPag.setPage}
+        />
       </div>
 
       <div className="mt-8 overflow-x-auto rounded-xl border border-slate-800">
@@ -3662,7 +4141,7 @@ function ReportsPage() {
             </tr>
           </thead>
           <tbody>
-            {paymentRows.map((p) => (
+            {paymentPag.pageItems.map((p) => (
               <tr key={p.id} className="border-t border-slate-800">
                 <td className="px-4 py-3 font-mono text-xs text-slate-200">{p.trackingNumber}</td>
                 <td className="px-4 py-3 text-slate-200">{p.originBranchName}</td>
@@ -3679,7 +4158,7 @@ function ReportsPage() {
                 </td>
               </tr>
             ))}
-            {paymentRows.length === 0 && (
+            {paymentPag.total === 0 && (
               <tr>
                 <td className="px-4 py-8 text-center text-slate-500" colSpan={7}>
                   No delivered product payment data yet.
@@ -3688,6 +4167,13 @@ function ReportsPage() {
             )}
           </tbody>
         </table>
+        <ListPagination
+          page={paymentPag.page}
+          totalPages={paymentPag.totalPages}
+          total={paymentPag.total}
+          pageSize={paymentPag.pageSize}
+          onPageChange={paymentPag.setPage}
+        />
       </div>
     </div>
   )
@@ -3955,6 +4441,8 @@ function TripsPage() {
     </option>
   ))
 
+  const tripsPag = useListPagination(trips)
+
   if (loading) return <p className="text-slate-400">Loadingâ€¦</p>
 
   return (
@@ -4059,7 +4547,7 @@ function TripsPage() {
             </tr>
           </thead>
           <tbody>
-            {trips.map((t) => (
+            {tripsPag.pageItems.map((t) => (
               <tr key={t.id} className="border-t border-slate-800">
                 <td className="px-4 py-3 text-slate-300">{new Date(t.loadTime).toLocaleString()}</td>
                 <td className="px-4 py-3 text-slate-200">
@@ -4100,7 +4588,7 @@ function TripsPage() {
                 </td>
               </tr>
             ))}
-            {trips.length === 0 && (
+            {tripsPag.total === 0 && (
               <tr>
                 <td className="px-4 py-8 text-center text-slate-500" colSpan={8}>
                   No trips yet.
@@ -4109,6 +4597,13 @@ function TripsPage() {
             )}
           </tbody>
         </table>
+        <ListPagination
+          page={tripsPag.page}
+          totalPages={tripsPag.totalPages}
+          total={tripsPag.total}
+          pageSize={tripsPag.pageSize}
+          onPageChange={tripsPag.setPage}
+        />
       </div>
 
       {editing && (
@@ -4259,6 +4754,8 @@ function DriverEarningsPage() {
     await load()
   }
 
+  const earningsPag = useListPagination(rows)
+
   if (loading) return <p className="text-slate-400">Loadingâ€¦</p>
 
   return (
@@ -4282,7 +4779,7 @@ function DriverEarningsPage() {
             </tr>
           </thead>
           <tbody>
-            {rows.map((r) => (
+            {earningsPag.pageItems.map((r) => (
               <tr key={r.driverProfileId} className="border-t border-slate-800">
                 <td className="px-4 py-3 text-slate-200">
                   {r.fullName}
@@ -4315,7 +4812,7 @@ function DriverEarningsPage() {
                 </td>
               </tr>
             ))}
-            {rows.length === 0 && (
+            {earningsPag.total === 0 && (
               <tr>
                 <td className="px-4 py-8 text-center text-slate-500" colSpan={6}>
                   No drivers in scope.
@@ -4324,6 +4821,13 @@ function DriverEarningsPage() {
             )}
           </tbody>
         </table>
+        <ListPagination
+          page={earningsPag.page}
+          totalPages={earningsPag.totalPages}
+          total={earningsPag.total}
+          pageSize={earningsPag.pageSize}
+          onPageChange={earningsPag.setPage}
+        />
       </div>
 
       {payOpen && (
@@ -4367,6 +4871,211 @@ function DriverEarningsPage() {
   )
 }
 
+function AccountPage() {
+  const role = localStorage.getItem('transport_role')
+  const isAdmin = role === 'Admin'
+  const [fullName, setFullName] = useState('')
+  const [phone, setPhone] = useState('')
+  const [email, setEmail] = useState('')
+  const [profileLoading, setProfileLoading] = useState(isAdmin)
+  const [profileSaving, setProfileSaving] = useState(false)
+  const [profileError, setProfileError] = useState<string | null>(null)
+  const [profileSuccess, setProfileSuccess] = useState(false)
+  const [currentPassword, setCurrentPassword] = useState('')
+  const [newPassword, setNewPassword] = useState('')
+  const [confirmPassword, setConfirmPassword] = useState('')
+  const [error, setError] = useState<string | null>(null)
+  const [success, setSuccess] = useState(false)
+  const [saving, setSaving] = useState(false)
+
+  useEffect(() => {
+    if (!isAdmin) return
+    void (async () => {
+      setProfileLoading(true)
+      const res = await apiFetch('/api/auth/me/account')
+      if (res.ok) {
+        const data = (await res.json()) as { fullName: string; phone: string; email: string | null }
+        setFullName(data.fullName)
+        setPhone(data.phone)
+        setEmail(data.email ?? '')
+      }
+      setProfileLoading(false)
+    })()
+  }, [isAdmin])
+
+  const saveProfile = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!isAdmin) return
+    setProfileError(null)
+    setProfileSuccess(false)
+    setProfileSaving(true)
+    const res = await apiFetch('/api/auth/me/account', {
+      method: 'PATCH',
+      body: JSON.stringify({ phone: phone.trim(), email: email.trim() || null }),
+    })
+    setProfileSaving(false)
+    if (!res.ok) {
+      const j = await res.json().catch(() => ({}))
+      setProfileError((j as { error?: string }).error ?? 'Could not save profile.')
+      return
+    }
+    const data = (await res.json()) as { fullName: string; phone: string; email: string | null }
+    setFullName(data.fullName)
+    setPhone(data.phone)
+    setEmail(data.email ?? '')
+    setProfileSuccess(true)
+  }
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    setError(null)
+    setSuccess(false)
+    if (newPassword.length < 6) {
+      setError('New password must be at least 6 characters.')
+      return
+    }
+    if (newPassword !== confirmPassword) {
+      setError('New password and confirmation do not match.')
+      return
+    }
+    setSaving(true)
+    const res = await apiFetch('/api/auth/me/password', {
+      method: 'PATCH',
+      body: JSON.stringify({
+        currentPassword,
+        newPassword,
+      }),
+    })
+    setSaving(false)
+    if (!res.ok) {
+      const j = await res.json().catch(() => ({}))
+      setError((j as { error?: string }).error ?? 'Could not change password.')
+      return
+    }
+    setCurrentPassword('')
+    setNewPassword('')
+    setConfirmPassword('')
+    setSuccess(true)
+  }
+
+  return (
+    <div>
+      <h2 className="mb-2 text-xl font-semibold text-white">Account</h2>
+      <p className="mb-6 text-sm text-slate-400">
+        {isAdmin
+          ? 'Update your contact details and password. Your email is used for password recovery.'
+          : 'Update the password you use to sign in.'}
+      </p>
+
+      {isAdmin && (
+        <form
+          onSubmit={saveProfile}
+          className="mb-8 max-w-md rounded-xl border border-slate-800 bg-slate-900/40 p-6"
+        >
+          <h3 className="mb-4 text-sm font-medium text-slate-300">Admin profile</h3>
+          {profileLoading ? (
+            <p className="text-slate-400">Loading…</p>
+          ) : (
+            <div className="space-y-4">
+              <div>
+                <label className="text-sm text-slate-400">Full name</label>
+                <input
+                  className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-slate-400"
+                  value={fullName}
+                  readOnly
+                />
+              </div>
+              <div>
+                <label className="text-sm text-slate-400">Mobile number / login ID</label>
+                <input
+                  className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-white"
+                  value={phone}
+                  onChange={(e) => setPhone(e.target.value)}
+                  required
+                />
+              </div>
+              <div>
+                <label className="text-sm text-slate-400">Email (for password reset)</label>
+                <input
+                  type="email"
+                  className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-white"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  autoComplete="email"
+                />
+              </div>
+            </div>
+          )}
+          {profileError && <p className="mt-4 text-sm text-red-400">{profileError}</p>}
+          {profileSuccess && <p className="mt-4 text-sm text-emerald-400">Profile saved.</p>}
+          <button
+            type="submit"
+            disabled={profileSaving || profileLoading}
+            className="mt-6 rounded-lg bg-violet-600 px-4 py-2 text-white hover:bg-violet-500 disabled:opacity-50"
+          >
+            {profileSaving ? 'Saving…' : 'Save profile'}
+          </button>
+        </form>
+      )}
+
+      <form
+        onSubmit={submit}
+        className="max-w-md rounded-xl border border-slate-800 bg-slate-900/40 p-6"
+      >
+        <h3 className="mb-4 text-sm font-medium text-slate-300">Change password</h3>
+        <div className="space-y-4">
+          <div>
+            <label className="text-sm text-slate-400">Current password</label>
+            <input
+              type="password"
+              autoComplete="current-password"
+              className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-white"
+              value={currentPassword}
+              onChange={(e) => setCurrentPassword(e.target.value)}
+              required
+            />
+          </div>
+          <div>
+            <label className="text-sm text-slate-400">New password</label>
+            <input
+              type="password"
+              autoComplete="new-password"
+              className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-white"
+              value={newPassword}
+              onChange={(e) => setNewPassword(e.target.value)}
+              required
+              minLength={6}
+            />
+          </div>
+          <div>
+            <label className="text-sm text-slate-400">Confirm new password</label>
+            <input
+              type="password"
+              autoComplete="new-password"
+              className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-white"
+              value={confirmPassword}
+              onChange={(e) => setConfirmPassword(e.target.value)}
+              required
+              minLength={6}
+            />
+          </div>
+        </div>
+        {error && <p className="mt-4 text-sm text-red-400">{error}</p>}
+        {success && (
+          <p className="mt-4 text-sm text-emerald-400">Password updated successfully.</p>
+        )}
+        <button
+          type="submit"
+          disabled={saving}
+          className="mt-6 rounded-lg bg-violet-600 px-4 py-2 text-white hover:bg-violet-500 disabled:opacity-50"
+        >
+          {saving ? 'Saving…' : 'Update password'}
+        </button>
+      </form>
+    </div>
+  )
+}
+
 function ApprovalsRoute() {
   const role = localStorage.getItem('transport_role')
   if (role !== 'Admin' && role !== 'BranchManager') return <Navigate to="/map" replace />
@@ -4398,6 +5107,7 @@ function DashboardRoutes() {
         <Route path="/trips" element={<TripsPage />} />
         <Route path="/driver-earnings" element={<DriverEarningsPage />} />
         <Route path="/configuration" element={<ConfigurationPage />} />
+        <Route path="/account" element={<AccountPage />} />
       </Routes>
     </Layout>
   )
@@ -4408,6 +5118,8 @@ export default function App() {
     <BrowserRouter>
       <Routes>
         <Route path="/login" element={<LoginPage />} />
+        <Route path="/forgot-password" element={<ForgotPasswordPage />} />
+        <Route path="/reset-password" element={<ResetPasswordPage />} />
         <Route path="/*" element={<DashboardRoutes />} />
       </Routes>
     </BrowserRouter>

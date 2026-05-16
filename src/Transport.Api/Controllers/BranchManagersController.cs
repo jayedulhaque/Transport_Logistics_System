@@ -24,4 +24,8 @@ public class BranchManagersController(ITransportService service) : ControllerBas
     [HttpDelete("{id:int}")]
     public Task<IResult> Delete(int id, CancellationToken ct) =>
         service.DeleteBranchManagerAsync(id, User, ct);
+
+    [HttpPost("{id:int}/reset-password")]
+    public Task<IResult> ResetPassword(int id, [FromBody] ResetPasswordRequest body, CancellationToken ct) =>
+        service.ResetBranchManagerPasswordAsync(id, body, User, ct);
 }

@@ -2,6 +2,18 @@ namespace Transport.Api.Contracts;
 
 public record LoginRequest(string Phone, string Password);
 
+public record ChangePasswordRequest(string CurrentPassword, string NewPassword);
+
+public record ResetPasswordRequest(string NewPassword);
+
+public record ForgotPasswordRequest(string Email);
+
+public record ResetPasswordWithTokenRequest(string Token, string NewPassword);
+
+public record AdminAccountDto(int UserId, string FullName, string Phone, string? Email);
+
+public record UpdateAdminAccountRequest(string Phone, string? Email);
+
 public record LoginResponse(
     string AccessToken,
     int UserId,

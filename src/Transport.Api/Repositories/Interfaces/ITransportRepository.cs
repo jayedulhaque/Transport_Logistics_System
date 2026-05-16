@@ -13,6 +13,7 @@ public interface ITransportRepository
     IQueryable<TripProduct> TripProducts { get; }
     IQueryable<AppConfiguration> AppConfigurations { get; }
     IQueryable<BranchSettlementPayment> BranchSettlementPayments { get; }
+    IQueryable<PasswordResetToken> PasswordResetTokens { get; }
 
     Task AddAsync<TEntity>(TEntity entity, CancellationToken ct = default) where TEntity : class;
     void Remove<TEntity>(TEntity entity) where TEntity : class;
