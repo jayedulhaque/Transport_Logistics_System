@@ -74,6 +74,15 @@ public record ProductListItemDto(
     string Status,
     DateTime CreatedAt);
 
+public record CustomerListItemDto(
+    string Phone,
+    string? SenderName,
+    string? SenderAddress,
+    int SentCount,
+    string? ReceiverName,
+    string? ReceiverAddress,
+    int ReceivedCount);
+
 public record ProductPartyDto(string Name, string Phone, string Address);
 
 public record ProductBranchManagerDto(string BranchName, string FullName, string Phone);
@@ -129,7 +138,9 @@ public record BranchSettlementPaymentDto(
     string Direction,
     string? Note,
     DateTime CreatedAt,
-    string RecordedByName);
+    string RecordedByName,
+    string Status,
+    string? BranchName = null);
 
 public record BranchSettlementDto(
     int BranchId,
@@ -143,6 +154,7 @@ public record BranchSettlementDto(
     decimal NetSettlement,
     decimal PaidToAdmin,
     decimal PaidFromAdmin,
+    decimal PendingToAdmin,
     decimal DueToAdmin,
     decimal DueFromAdmin,
     IReadOnlyList<BranchSettlementPaymentDto> RecentPayments);

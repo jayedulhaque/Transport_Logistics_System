@@ -15,6 +15,9 @@ public interface ITransportService
     Task<IResult> DeleteBranchAsync(int id, ClaimsPrincipal principal, CancellationToken ct = default);
     Task<IResult> GetBranchSettlementAsync(int branchId, string? fromDate, string? toDate, ClaimsPrincipal principal, CancellationToken ct = default);
     Task<IResult> RecordBranchSettlementPaymentAsync(int branchId, RecordBranchSettlementPaymentRequest body, ClaimsPrincipal principal, CancellationToken ct = default);
+    Task<IResult> GetPendingBranchSettlementPaymentsAsync(ClaimsPrincipal principal, CancellationToken ct = default);
+    Task<IResult> ApproveBranchSettlementPaymentAsync(int paymentId, ClaimsPrincipal principal, CancellationToken ct = default);
+    Task<IResult> RejectBranchSettlementPaymentAsync(int paymentId, ClaimsPrincipal principal, CancellationToken ct = default);
 
     Task<IResult> LoginAsync(LoginRequest body, CancellationToken ct = default);
     Task<IResult> ChangeMyPasswordAsync(ChangePasswordRequest body, ClaimsPrincipal principal, CancellationToken ct = default);
@@ -73,6 +76,7 @@ public interface ITransportService
 
     Task<IResult> CreateProductAsync(CreateProductRequest body, ClaimsPrincipal principal, CancellationToken ct = default);
     Task<IResult> GetProductsAsync(ClaimsPrincipal principal, string? tracking = null, string? phone = null, CancellationToken ct = default);
+    Task<IResult> GetCustomersAsync(ClaimsPrincipal principal, string? phone = null, CancellationToken ct = default);
     Task<IResult> GetProductDetailAsync(Guid id, ClaimsPrincipal principal, CancellationToken ct = default);
     Task<IResult> UpdateProductAsync(Guid id, UpdateProductRequest body, ClaimsPrincipal principal, CancellationToken ct = default);
     Task<IResult> DeleteProductAsync(Guid id, ClaimsPrincipal principal, CancellationToken ct = default);

@@ -40,4 +40,19 @@ public class BranchesController(ITransportService service) : ControllerBase
     [Authorize]
     public Task<IResult> RecordPayment(int id, [FromBody] RecordBranchSettlementPaymentRequest body, CancellationToken ct) =>
         service.RecordBranchSettlementPaymentAsync(id, body, User, ct);
+
+    [HttpGet("/api/branches/settlement/payments/pending")]
+    [Authorize]
+    public Task<IResult> GetPendingPayments(CancellationToken ct) =>
+        service.GetPendingBranchSettlementPaymentsAsync(User, ct);
+
+    [HttpPatch("/api/branches/settlement/payments/{paymentId:int}/approve")]
+    [Authorize]
+    public Task<IResult> ApprovePayment(int paymentId, CancellationToken ct) =>
+        service.ApproveBranchSettlementPaymentAsync(paymentId, User, ct);
+
+    [HttpPatch("/api/branches/settlement/payments/{paymentId:int}/reject")]
+    [Authorize]
+    public Task<IResult> RejectPayment(int paymentId, CancellationToken ct) =>
+        service.RejectBranchSettlementPaymentAsync(paymentId, User, ct);
 }

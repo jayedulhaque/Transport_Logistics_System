@@ -11,7 +11,11 @@ public class BranchSettlementPayment
     public string? Note { get; set; }
     public DateTime CreatedAt { get; set; }
     public int RecordedByUserId { get; set; }
+    public BranchSettlementPaymentStatus Status { get; set; } = BranchSettlementPaymentStatus.Approved;
+    public int? ApprovedByUserId { get; set; }
+    public DateTime? ApprovedAt { get; set; }
 
     public Branch Branch { get; set; } = null!;
     public User RecordedBy { get; set; } = null!;
+    public User? ApprovedBy { get; set; }
 }

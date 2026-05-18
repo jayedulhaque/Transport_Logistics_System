@@ -27,7 +27,7 @@ flowchart LR
 - `Controllers`: HTTP endpoints, authorization attributes, request mapping.
 - `Services`: business logic and role-based rules (`ITransportService` / `TransportService`).
 - `Repositories`: data access abstraction (`ITransportRepository`).
-- `Domain Entities`: `User`, `DriverProfile`, `Branch`, `Product`, `Trip`, `TripProduct`.
+- `Domain Entities`: `User`, `DriverProfile`, `Branch`, `Product`, `Trip`, `TripDestination`, `TripProduct`, `BranchSettlementPayment`, `PasswordResetToken`, `AppConfiguration`.
 - Cross-cutting:
   - JWT authentication/authorization
   - SignalR hub (`/hubs/transport`) for real-time driver/event updates
@@ -64,6 +64,8 @@ erDiagram
         string BranchName
         string Code "UNIQUE"
         string Address
+        string SettlementType "Normal or Commission"
+        decimal CommissionPercent "nullable"
     }
 
     USERS {
@@ -71,9 +73,19 @@ erDiagram
         int BranchId FK "nullable"
         string FullName
         string Phone "UNIQUE"
-        string Role
+        string Email "UNIQUE nullable"
+        string Role "Admin BranchManager Staff Driver"
         bool IsActive
         string PasswordHash "nullable"
+    }
+
+    PASSWORD_RESET_TOKENS {
+        int Id PK
+        int UserId FK
+        string TokenHash "UNIQUE"
+        datetime ExpiresAtUtc
+        datetime UsedAtUtc "nullable"
+        datetime CreatedAtUtc
     }
 
     DRIVER_PROFILES {
@@ -85,6 +97,8 @@ erDiagram
         decimal CurrentLng
         bool IsOnline
         datetime LastSeenAt "nullable"
+        decimal AccruedTripEarnings
+        decimal PaidToDriver
     }
 
     PRODUCTS {
@@ -101,7 +115,9 @@ erDiagram
         int DestinationBranchId FK
         int CurrentBranchId FK "nullable"
         decimal ShippingPrice
-        string Status
+        decimal AmountReceivedAtOrigin
+        decimal AmountReceivedAtDestination
+        string Status "Pending InTransit Downloaded Delivered"
         datetime CreatedAt
         datetime DeliveredAt "nullable"
     }
@@ -110,9 +126,15 @@ erDiagram
         uuid Id PK
         int DriverProfileId FK
         int OriginBranchId FK
-        int DestinationBranchId FK
         datetime LoadTime
-        string Status
+        string Status "AwaitingLoad Active Completed"
+        decimal DriverPaymentAmount
+        bool EarningsCredited
+    }
+
+    TRIP_DESTINATIONS {
+        uuid TripId PK,FK
+        int BranchId PK,FK
     }
 
     TRIP_PRODUCTS {
@@ -120,88 +142,229 @@ erDiagram
         uuid ProductId PK,FK
     }
 
-    BRANCHES ||--o{ USERS : "has users"
-    USERS ||--o| DRIVER_PROFILES : "driver account profile"
+    BRANCH_SETTLEMENT_PAYMENTS {
+        int Id PK
+        int BranchId FK
+        decimal Amount
+        string Direction "ToAdmin FromAdmin"
+        string Status "Pending Approved Rejected"
+        string Note "nullable"
+        datetime CreatedAt
+        int RecordedByUserId FK
+        int ApprovedByUserId FK "nullable"
+        datetime ApprovedAt "nullable"
+    }
 
-    BRANCHES ||--o{ PRODUCTS : "origin products"
-    BRANCHES ||--o{ PRODUCTS : "destination products"
-    BRANCHES ||--o{ PRODUCTS : "current location products"
+    APP_CONFIGURATIONS {
+        int Id PK
+        string ConfigKey "UNIQUE"
+        string ConfigValue
+        datetime UpdatedAt
+    }
 
-    DRIVER_PROFILES ||--o{ TRIPS : "assigned trips"
+    BRANCHES ||--o{ USERS : "employs"
+    USERS ||--o| DRIVER_PROFILES : "driver profile"
+    USERS ||--o{ PASSWORD_RESET_TOKENS : "reset tokens"
+    USERS ||--o{ BRANCH_SETTLEMENT_PAYMENTS : "recorded by"
+    USERS ||--o{ BRANCH_SETTLEMENT_PAYMENTS : "approved by"
+
+    BRANCHES ||--o{ PRODUCTS : "origin"
+    BRANCHES ||--o{ PRODUCTS : "destination"
+    BRANCHES ||--o{ PRODUCTS : "current location"
     BRANCHES ||--o{ TRIPS : "trip origin"
-    BRANCHES ||--o{ TRIPS : "trip destination"
+    BRANCHES ||--o{ TRIP_DESTINATIONS : "trip destination hub"
+    BRANCHES ||--o{ BRANCH_SETTLEMENT_PAYMENTS : "settlement ledger"
 
-    TRIPS ||--o{ TRIP_PRODUCTS : "contains"
-    PRODUCTS ||--o{ TRIP_PRODUCTS : "loaded in"
+    DRIVER_PROFILES ||--o{ TRIPS : "drives"
+
+    TRIPS ||--o{ TRIP_DESTINATIONS : "allowed destinations"
+    TRIPS ||--o{ TRIP_PRODUCTS : "carries"
+    PRODUCTS ||--o{ TRIP_PRODUCTS : "loaded on"
+```
+
+### Entity summaries
+
+| Entity | Purpose |
+|--------|---------|
+| `Branches` | Hub locations with **Normal** or **Commission** settlement rules |
+| `Users` | Login accounts (`Admin`, `BranchManager`, `Staff`, `Driver`) optionally tied to a branch |
+| `DriverProfiles` | Driver vehicle, approval, GPS, online presence, trip earnings balance |
+| `Products` | Shipments (sender/receiver parties, payment splits, status lifecycle) |
+| `Trips` | Driver run from an origin branch; may serve **multiple destination branches** |
+| `TripDestinations` | Allowed destination hubs for a planned trip (composite PK) |
+| `TripProducts` | Parcels loaded on a trip (composite PK) |
+| `BranchSettlementPayments` | Partial branch↔admin settlements with optional **admin approval** |
+| `PasswordResetTokens` | Hashed tokens for admin email password recovery |
+| `AppConfigurations` | Key/value settings (e.g. Google Maps API key) |
+
+### Product status lifecycle
+
+```text
+Pending  →  InTransit  →  Downloaded  →  Delivered
+(at origin)   (on truck)   (at dest hub)   (handed to receiver)
+```
+
+### Trip status lifecycle
+
+```text
+AwaitingLoad  →  Active  →  Completed
+(planned)         (driver started)   (all parcels unloaded; earnings credited)
 ```
 
 ### Relationship and constraint notes
 
-- `Users.Phone` is unique.
+- `Users.Phone` is unique; `Users.Email` is unique when not null.
 - `Branches.Code` is unique.
 - `Products.TrackingNumber` is unique.
 - `DriverProfiles.UserId` is one-to-one with `Users.Id`.
-- `TripProducts` is a many-to-many junction with composite primary key (`TripId`, `ProductId`).
-- Delete behavior:
-  - `User -> Branch`: `SetNull` on branch deletion
-  - `DriverProfile -> User`: `Cascade`
-  - `Product -> OriginBranch / DestinationBranch`: `Restrict`
-  - `Product -> CurrentBranch`: `SetNull`
-  - `Trip -> DriverProfile / Branches`: `Restrict`
-  - `TripProduct -> Trip`: `Cascade`
-  - `TripProduct -> Product`: `Restrict`
+- `TripDestinations` and `TripProducts` use composite primary keys (`TripId` + `BranchId` / `ProductId`).
+- A trip has **one origin** (`Trips.OriginBranchId`) and **many destinations** via `TripDestinations` (replaces a single destination column on trips).
+- `BranchSettlementPayments`: only **Approved** rows reduce settlement balances; branch-manager **ToAdmin** payments start as **Pending** until admin approves; admin-recorded payments are approved immediately.
+- Delete behavior (high level):
+  - `User → Branch`: `SetNull`
+  - `DriverProfile → User`: `Cascade`
+  - `PasswordResetToken → User`: `Cascade`
+  - `Product → OriginBranch / DestinationBranch`: `Restrict`
+  - `Product → CurrentBranch`: `SetNull`
+  - `Trip → DriverProfile / OriginBranch`: `Restrict`
+  - `TripDestination → Trip`: `Cascade`; `TripDestination → Branch`: `Restrict`
+  - `TripProduct → Trip`: `Cascade`; `TripProduct → Product`: `Restrict`
+  - `BranchSettlementPayment → Branch`: `Cascade`; `→ User` (recorded/approved): `Restrict`
 
 ---
 
 ## 3) Sequence Diagram (Shipment Lifecycle)
 
-This sequence shows the common flow from login to delivery:
+End-to-end flow covering driver onboarding, multi-destination trips, parcel status transitions, delivery verification, trip completion with driver earnings, and branch settlement payments.
+
+### Product and trip status reference
+
+| Stage | Product status | Trip status (if applicable) |
+|-------|----------------|----------------------------|
+| Booked at origin | `Pending` | `AwaitingLoad` (planned trip) or created ad-hoc on first load |
+| Scanned onto truck | `InTransit` | `AwaitingLoad` until driver starts, then `Active` |
+| Arrived at destination hub | `Downloaded` | `Active` until all parcels on trip are unloaded |
+| Handed to receiver | `Delivered` | `Completed` when no `InTransit` parcels remain on trip |
 
 ```mermaid
 sequenceDiagram
     autonumber
-    actor U as User (Admin/Staff)
-    participant W as Web/Mobile Client
+    actor Admin as Admin / Branch Manager
+    actor Staff as Staff (origin / dest)
+    actor Drv as Driver (mobile)
+    participant Web as Web Console
+    participant Mob as Mobile App
     participant API as Transport.Api
     participant DB as PostgreSQL
-    participant D as Driver App
-    participant HUB as SignalR Hub
+    participant Hub as SignalR Hub
 
-    U->>W: Login (phone/password)
-    W->>API: POST /api/auth/login
-    API->>DB: Validate user + bcrypt password
-    DB-->>API: User + role + branch
-    API-->>W: JWT token
+  rect rgb(30,30,40)
+    Note over Admin,DB: Authentication
+    Admin->>Web: Login
+    Web->>API: POST /api/auth/login
+    API->>DB: Validate credentials
+    API-->>Web: JWT (role, branchId)
+  end
 
-    U->>W: Create shipment
-    W->>API: POST /api/products (JWT)
-    API->>DB: Insert Product (Pending)
-    DB-->>API: Product + TrackingNumber
-    API-->>W: ProductCreatedResponse
+  rect rgb(30,40,30)
+    Note over Drv,DB: Driver onboarding (optional)
+    Drv->>Mob: Register
+    Mob->>API: POST /api/auth/register-driver
+    API->>DB: User + DriverProfile (IsApproved=false)
+    Admin->>Web: Approve driver
+    Web->>API: PATCH /api/drivers/{id}/approve
+    API->>DB: IsApproved=true
+  end
 
-    U->>W: Load trip with products
-    W->>API: POST /api/trips/load
-    API->>DB: Create Trip + TripProducts + status updates
-    DB-->>API: TripId
-    API-->>W: TripLoadResponse
+  rect rgb(40,35,30)
+    Note over Admin,DB: Plan trip (multi-destination)
+    Admin->>Web: Create trip (driver, origin, destination branch IDs, driver pay)
+    Web->>API: POST /api/trips
+    API->>DB: Trip (AwaitingLoad) + TripDestinations
+    API-->>Web: tripId
+  end
 
-    D->>API: PATCH /api/drivers/me/location
-    API->>DB: Update DriverProfile location
-    API->>HUB: Broadcast location update
-    HUB-->>W: Real-time driver location event
+  rect rgb(35,35,45)
+    Note over Admin,DB: Book shipment at origin
+    Admin->>Web: Create product (parties, branches, shipping, origin payment)
+    Web->>API: POST /api/products
+    API->>DB: Product Pending, CurrentBranch=origin
+    API-->>Web: trackingNumber
+  end
 
-    U->>W: Unload trip
-    W->>API: POST /api/trips/unload
-    API->>DB: Update Product current branch/status
-    DB-->>API: Updated rows
-    API-->>W: OK
+  rect rgb(45,40,30)
+    Note over Staff,DB: Load at origin (planned or ad-hoc trip)
+    Staff->>Web: Scan/select parcels + driver (+ optional tripId)
+    Web->>API: POST /api/trips/load
+    alt Planned trip (tripId provided)
+      API->>DB: TripProducts, Product→InTransit, CurrentBranch=null
+      Note right of API: Validates trip AwaitingLoad, dest on trip route
+    else Ad-hoc load (no tripId)
+      API->>DB: New Trip Active + TripDestinations from parcel dests
+      API->>DB: TripProducts, Product→InTransit
+    end
+    API-->>Web: TripLoadResponse
+  end
 
-    U->>W: Deliver product
-    W->>API: PATCH /api/products/{id}/deliver
-    API->>DB: Set Product Delivered + DeliveredAt
-    DB-->>API: Persisted
-    API-->>W: OK
+  rect rgb(30,45,40)
+    Note over Drv,DB: Driver starts planned trip
+    Drv->>Mob: Start trip
+    Mob->>API: POST /api/drivers/me/trips/{tripId}/start
+    API->>DB: Trip AwaitingLoad → Active
+  end
+
+  par Live tracking
+    Drv->>Mob: GPS update
+    Mob->>API: PATCH /api/drivers/me/location
+    API->>DB: DriverProfile lat/lng
+    API->>Hub: Broadcast DriverLocationUpdated
+    Hub-->>Web: Live map marker update
+  end
+
+  rect rgb(40,30,35)
+    Note over Staff,DB: Unload at destination hub
+    Staff->>Web: Unload parcels at destination branch
+    Web->>API: POST /api/trips/unload
+    API->>DB: Product→Downloaded, CurrentBranch=dest
+    API->>DB: TryCompleteTrip (no InTransit left → Trip Completed, credit driver earnings)
+    API-->>Web: unloadedCount
+  end
+
+  rect rgb(35,45,35)
+    Note over Staff,DB: Deliver to receiver
+    Staff->>Web: Deliver (receiver phone verify, collect balance if due)
+    Web->>API: PATCH /api/products/{id}/deliver
+    API->>DB: Validate phone + AmountReceivedAtDestination
+    API->>DB: Product→Delivered, DeliveredAt set
+    API-->>Web: 204 No Content
+  end
+
+  rect rgb(45,35,45)
+    Note over Admin,DB: Branch settlement (post-delivery reporting)
+    Admin->>Web: View settlement (delivered collections − approved payments)
+    alt Branch manager pays admin
+      Admin->>Web: Submit payment ToAdmin
+      Web->>API: POST /api/branches/{id}/settlement/payments
+      API->>DB: Payment Pending (not in balance yet)
+      Admin->>Web: Approve on Approvals or branch settlement
+      Web->>API: PATCH .../payments/{id}/approve
+      API->>DB: Status→Approved, balance updated
+    else Admin records payment
+      Admin->>Web: Record ToAdmin or FromAdmin
+      Web->>API: POST /api/branches/{id}/settlement/payments
+      API->>DB: Payment Approved immediately
+    end
+  end
 ```
+
+### Lifecycle notes
+
+- **Create product**: `Admin` or `BranchManager` (origin must be manager’s branch). Collects `AmountReceivedAtOrigin` up to `ShippingPrice`.
+- **Load**: `Staff` or `BranchManager` at origin. Parcels must be `Pending` and at the branch. Planned loads require destination ∈ `TripDestinations`.
+- **Driver start**: Only after at least one parcel is loaded; moves trip `AwaitingLoad` → `Active`.
+- **Unload**: Only at **destination** branch; sets `Downloaded`. When every parcel on the trip is off the truck, trip → `Completed` and `DriverPaymentAmount` accrues to the driver profile (once).
+- **Deliver**: Only `Downloaded` parcels; receiver phone must match; any remaining shipping balance collected at destination.
+- **Customers view**: Derived from product sender/receiver phones (`GET /api/customers`); admins see all, branch managers see customers linked to their branch’s shipments.
 
 ---
 
@@ -237,10 +400,13 @@ flowchart TD
 
 ### Data movement by feature
 
-- Auth flow: Client -> `AuthController` -> `TransportService.LoginAsync` -> DB -> JWT token.
-- Product/trip flow: Client -> controller -> service business rules -> repository -> EF Core -> PostgreSQL.
-- Real-time tracking: Driver updates location/presence -> API updates `DriverProfiles` -> SignalR pushes events to subscribed clients.
-- Reporting: `ReportsController` aggregates delivered `Products` by destination branch and date range.
+- **Auth**: Client → `AuthController` → login / register-driver / password reset → JWT with role + `branchId`.
+- **Shipments**: Product CRUD, trip create/load/unload, deliver — service enforces role, branch scope, and status transitions.
+- **Drivers**: Approval, presence, GPS, trip start, earnings accrual and payout.
+- **Settlement**: Delivered-product collections vs approved `BranchSettlementPayments`; branch-manager payments may stay `Pending` until admin approval.
+- **Customers**: Aggregated sender/receiver stats from `Products` (scoped by branch for managers).
+- **Real-time**: Driver location/presence → `DriverProfiles` → SignalR hub → live map on web console.
+- **Reporting**: Branch collections and bookings-by-destination from delivered / pending products.
 
 ---
 
@@ -289,17 +455,19 @@ flowchart TD
 ## 6) API Surface (Functional Design)
 
 Main endpoint groups:
-- Auth: `/api/auth/login`, `/api/auth/register-driver`
-- Branches: `/api/public/branches`, `/api/branches`
-- Products: `/api/products`, `/api/products/{id}/deliver`
-- Trips: `/api/trips/load`, `/api/trips/unload`
-- Drivers: pending/approved, approve, branch change, self presence/location/status
-- Tracking: `/api/tracking/driver-locations`
-- Staff and branch managers CRUD
-- Reports: `/api/reports/branch-collections`
-- Health: `/health`
+- **Auth**: `/api/auth/login`, `/api/auth/register-driver`, `/api/auth/me/account`, `/api/auth/forgot-password`, `/api/auth/reset-password`
+- **Branches**: `/api/public/branches`, `/api/branches`, settlement (`/settlement`, `/settlement/payments`, pending approve/reject)
+- **Products**: `/api/products`, `/api/products/{id}`, `/api/products/{id}/deliver`
+- **Trips**: `/api/trips` (create/list/update), `/api/trips/load`, `/api/trips/unload`
+- **Drivers**: pending/approved, approve, profile, presence/location, trip state/start, earnings/payout
+- **Customers**: `/api/customers` (aggregated sender/receiver counts; branch-scoped for managers)
+- **Staff / branch managers**: CRUD, password reset, product lookup
+- **Tracking**: `/api/tracking/driver-locations`, `/api/tracking/map-settings`
+- **Reports**: `/api/reports/branch-collections`, `/api/reports/bookings-by-destination`
+- **Configuration**: `/api/configurations/{key}` (admin)
+- **Health**: `/health`
 
-Authorization is role-driven through JWT claims (`Admin`, `BranchManager`, `Staff`, `Driver`), with restrictions enforced in service methods.
+Authorization is role-driven through JWT claims (`Admin`, `BranchManager`, `Staff`, `Driver`), with branch scoping and business rules enforced in `TransportService`.
 
 ---
 
@@ -361,11 +529,16 @@ Authorization is role-driven through JWT claims (`Admin`, `BranchManager`, `Staf
 
 ### D. Regression checklist (recommended)
 
-- Role-based access works for all protected endpoints.
-- Product status transitions are valid (`Pending` -> in transit/unloaded -> `Delivered`).
-- Delivered items populate reports with correct `ShippingPrice` totals.
-- Driver approval + presence + location updates are reflected in real-time on clients.
-- Branch/product/trip delete constraints prevent invalid data loss.
+- Role-based access works for all protected endpoints (including branch-scoped manager/staff rules).
+- Product status transitions: `Pending` → `InTransit` → `Downloaded` → `Delivered` (invalid skips rejected).
+- Trip lifecycle: `AwaitingLoad` → `Active` (driver start) → `Completed` (all parcels unloaded); driver earnings credited once.
+- Multi-destination trips: load only accepts parcels whose destination is on the trip route.
+- Delivery: receiver phone verification and destination payment rules enforced.
+- Settlement: branch-manager `ToAdmin` payments stay pending until admin approval; admin payments settle immediately.
+- Customers list: admin sees all; branch manager sees only branch-linked phones.
+- Reports use delivered products and correct collection amounts (`AmountReceivedAtOrigin` / `AmountReceivedAtDestination`).
+- Driver approval, presence, and location updates appear on the live map via SignalR.
+- Delete constraints prevent removing branches/users/products/trips that are still referenced.
 
 ---
 

@@ -18,6 +18,7 @@ import { QRCodeSVG } from 'qrcode.react'
 import {
   BarChart3,
   Building2,
+  Contact,
   Check,
   LogOut,
   MapPin,
@@ -199,6 +200,7 @@ type BranchSettlement = {
   netSettlement: number
   paidToAdmin: number
   paidFromAdmin: number
+  pendingToAdmin: number
   dueToAdmin: number
   dueFromAdmin: number
   recentPayments: {
@@ -208,6 +210,8 @@ type BranchSettlement = {
     note: string | null
     createdAt: string
     recordedByName: string
+    status: string
+    branchName?: string | null
   }[]
 }
 
@@ -681,7 +685,7 @@ function Layout({ children }: { children: React.ReactNode }) {
   const navigate = useNavigate()
   const { pathname } = useLocation()
   const role = localStorage.getItem('transport_role')
-  const wideMain = pathname === '/products'
+  const wideMain = pathname === '/products' || pathname === '/customers'
 
   const logout = () => {
     localStorage.removeItem('transport_token')
@@ -734,6 +738,11 @@ function Layout({ children }: { children: React.ReactNode }) {
             </Link>
           )}
           {(role === 'Admin' || role === 'BranchManager') && (
+            <Link className="flex items-center gap-1 hover:text-violet-400" to="/customers">
+              <Contact size={16} /> Customers
+            </Link>
+          )}
+          {(role === 'Admin' || role === 'BranchManager') && (
             <Link className="flex items-center gap-1 hover:text-violet-400" to="/trips">
               <Truck size={16} /> Trips
             </Link>
@@ -765,31 +774,48 @@ function Layout({ children }: { children: React.ReactNode }) {
   )
 }
 
+type PendingSettlementPayment = {
+  id: number
+  amount: number
+  direction: string
+  note: string | null
+  createdAt: string
+  recordedByName: string
+  status: string
+  branchName?: string | null
+}
+
 function ApprovalsPage() {
   const role = localStorage.getItem('transport_role')
   const isAdmin = role === 'Admin'
   const [rows, setRows] = useState<PendingDriver[]>([])
   const [approved, setApproved] = useState<ApprovedDriver[]>([])
+  const [pendingPayments, setPendingPayments] = useState<PendingSettlementPayment[]>([])
   const [branches, setBranches] = useState<Branch[]>([])
   const [loading, setLoading] = useState(true)
   const [driverEdits, setDriverEdits] = useState<Record<number, DriverEditFields>>({})
   const [savingDriverId, setSavingDriverId] = useState<number | null>(null)
+  const [paymentActionId, setPaymentActionId] = useState<number | null>(null)
   const [error, setError] = useState<string | null>(null)
 
   const load = useCallback(async () => {
     setLoading(true)
     setError(null)
-    const [pendingRes, approvedRes, branchesRes] = await Promise.all([
+    const requests = [
       apiFetch('/api/drivers/pending'),
       apiFetch('/api/drivers/approved'),
       apiFetch('/api/branches'),
-    ])
+      ...(isAdmin ? [apiFetch('/api/branches/settlement/payments/pending')] : []),
+    ] as const
+    const [pendingRes, approvedRes, branchesRes, paymentsRes] = await Promise.all(requests)
     if (pendingRes.ok) setRows(await pendingRes.json())
     if (approvedRes.ok) setApproved(await approvedRes.json())
     if (branchesRes.ok) setBranches(await branchesRes.json())
+    if (isAdmin && paymentsRes?.ok) setPendingPayments(await paymentsRes.json())
+    else if (!isAdmin) setPendingPayments([])
     setDriverEdits({})
     setLoading(false)
-  }, [])
+  }, [isAdmin])
 
   useEffect(() => {
     void load()
@@ -800,6 +826,22 @@ function ApprovalsPage() {
     if (!res.ok) {
       const j = await res.json().catch(() => ({}))
       setError((j as { error?: string }).error ?? 'Could not approve driver.')
+      return
+    }
+    await load()
+  }
+
+  const settlePayment = async (paymentId: number, action: 'approve' | 'reject') => {
+    setPaymentActionId(paymentId)
+    setError(null)
+    const res = await apiFetch(
+      `/api/branches/settlement/payments/${paymentId}/${action}`,
+      { method: 'PATCH' }
+    )
+    setPaymentActionId(null)
+    if (!res.ok) {
+      const j = await res.json().catch(() => ({}))
+      setError((j as { error?: string }).error ?? `Could not ${action} payment.`)
       return
     }
     await load()
@@ -863,6 +905,7 @@ function ApprovalsPage() {
   ))
 
   const pendingPag = useListPagination(rows)
+  const pendingPaymentsPag = useListPagination(pendingPayments)
   const approvedPag = useListPagination(approved)
 
   if (loading) return <p className="text-slate-400">Loadingâ€¦</p>
@@ -967,6 +1010,81 @@ function ApprovalsPage() {
           />
         </div>
       </div>
+
+      {isAdmin && (
+        <div>
+          <h2 className="mb-4 text-xl font-semibold text-white">
+            Pending branch payments to admin
+          </h2>
+          <p className="mb-3 text-sm text-slate-500">
+            Branch managers submitted these payments; approve to settle the branch balance.
+          </p>
+          <div className="overflow-hidden rounded-xl border border-slate-800">
+            <table className="w-full text-left text-sm">
+              <thead className="bg-slate-900 text-slate-400">
+                <tr>
+                  <th className="px-4 py-3">Branch</th>
+                  <th className="px-4 py-3">Amount</th>
+                  <th className="px-4 py-3">Note</th>
+                  <th className="px-4 py-3">Submitted by</th>
+                  <th className="px-4 py-3">When</th>
+                  <th className="px-4 py-3 text-right">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {pendingPaymentsPag.pageItems.length === 0 ? (
+                  <tr>
+                    <td colSpan={6} className="px-4 py-6 text-center text-slate-500">
+                      No pending branch payments.
+                    </td>
+                  </tr>
+                ) : (
+                  pendingPaymentsPag.pageItems.map((p) => (
+                    <tr key={p.id} className="border-t border-slate-800">
+                      <td className="px-4 py-3">{p.branchName ?? '—'}</td>
+                      <td className="px-4 py-3 font-mono text-white">
+                        {formatMoneyDisplay(Number(p.amount))}
+                      </td>
+                      <td className="px-4 py-3 text-slate-400">{p.note ?? '—'}</td>
+                      <td className="px-4 py-3">{p.recordedByName}</td>
+                      <td className="px-4 py-3 text-slate-500">
+                        {new Date(p.createdAt).toLocaleString()}
+                      </td>
+                      <td className="px-4 py-3 text-right">
+                        <div className="inline-flex gap-2">
+                          <button
+                            type="button"
+                            disabled={paymentActionId === p.id}
+                            onClick={() => void settlePayment(p.id, 'approve')}
+                            className="rounded-lg bg-emerald-700 px-3 py-1 text-xs text-white hover:bg-emerald-600 disabled:opacity-50"
+                          >
+                            Approve
+                          </button>
+                          <button
+                            type="button"
+                            disabled={paymentActionId === p.id}
+                            onClick={() => void settlePayment(p.id, 'reject')}
+                            className="rounded-lg bg-slate-700 px-3 py-1 text-xs text-white hover:bg-slate-600 disabled:opacity-50"
+                          >
+                            Reject
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+            <ListPagination
+              page={pendingPaymentsPag.page}
+              totalPages={pendingPaymentsPag.totalPages}
+              total={pendingPaymentsPag.total}
+              pageSize={pendingPaymentsPag.pageSize}
+              onPageChange={pendingPaymentsPag.setPage}
+            />
+          </div>
+        </div>
+      )}
 
       <div>
         <h2 className="mb-4 text-xl font-semibold text-white">Approved drivers</h2>
@@ -1190,6 +1308,7 @@ function BranchesPage() {
   const [payDirection, setPayDirection] = useState<'ToAdmin' | 'FromAdmin'>('ToAdmin')
   const [payNote, setPayNote] = useState('')
   const [paySaving, setPaySaving] = useState(false)
+  const [paymentActionId, setPaymentActionId] = useState<number | null>(null)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -1355,6 +1474,24 @@ function BranchesPage() {
     setPayNote('')
   }
 
+  const settlePayment = async (paymentId: number, action: 'approve' | 'reject') => {
+    setPaymentActionId(paymentId)
+    setSettlementError(null)
+    const res = await apiFetch(
+      `/api/branches/settlement/payments/${paymentId}/${action}`,
+      { method: 'PATCH' }
+    )
+    setPaymentActionId(null)
+    if (!res.ok) {
+      const j = await res.json().catch(() => ({}))
+      setSettlementError((j as { error?: string }).error ?? `Could not ${action} payment`)
+      return
+    }
+    if (selectedBranchId != null) {
+      setSettlement(await res.json())
+    }
+  }
+
   const paymentsPag = useListPagination(settlement?.recentPayments ?? [])
 
   if (loading) return <p className="text-slate-400">Loading...</p>
@@ -1500,7 +1637,7 @@ function BranchesPage() {
             {settlementFrom || settlementTo
               ? ` (${settlementFrom || '…'} to ${settlementTo || '…'})`
               : ' (all time)'}
-            . Payments reduce the full balance.
+            . Approved payments reduce the balance; branch-manager payments to admin require admin approval.
           </p>
 
           <div className="mb-4 flex flex-wrap items-end gap-3">
@@ -1587,6 +1724,13 @@ function BranchesPage() {
                   </p>
                   <p className="mt-1 text-xs text-slate-500">
                     Paid: {formatMoneyDisplay(Number(settlement.paidToAdmin))}
+                    {(settlement.pendingToAdmin ?? 0) > 0 && (
+                      <>
+                        {' '}
+                        · Pending:{' '}
+                        {formatMoneyDisplay(Number(settlement.pendingToAdmin))}
+                      </>
+                    )}
                   </p>
                 </div>
                 {(isCommissionSettlement || settlement.dueFromAdmin > 0) && (
@@ -1602,7 +1746,8 @@ function BranchesPage() {
                 )}
               </div>
 
-              {(settlement.dueToAdmin > 0 || (isAdmin && settlement.dueFromAdmin > 0)) && (
+              {(settlement.dueToAdmin - (settlement.pendingToAdmin ?? 0) > 0.01 ||
+                (isAdmin && settlement.dueFromAdmin > 0)) && (
                 <form
                   onSubmit={recordPayment}
                   className="mb-6 rounded-lg border border-slate-800 bg-slate-950/40 p-4"
@@ -1645,12 +1790,22 @@ function BranchesPage() {
                       disabled={paySaving}
                       className="rounded-lg bg-violet-600 px-4 py-2 text-white hover:bg-violet-500 disabled:opacity-50"
                     >
-                      {paySaving ? 'Saving…' : 'Record payment'}
+                      {paySaving
+                        ? 'Saving…'
+                        : isAdmin
+                          ? 'Record payment'
+                          : 'Submit for approval'}
                     </button>
                   </div>
                   {!isAdmin && (
                     <p className="mt-2 text-xs text-slate-500">
-                      Branch managers can record payments from the branch to admin only.
+                      Payments to admin are submitted for admin approval before they reduce
+                      the balance.
+                    </p>
+                  )}
+                  {isAdmin && (
+                    <p className="mt-2 text-xs text-slate-500">
+                      Admin-recorded payments (to or from admin) are settled immediately.
                     </p>
                   )}
                 </form>
@@ -1660,10 +1815,13 @@ function BranchesPage() {
                 <div>
                   <h4 className="mb-2 text-sm font-medium text-slate-400">Recent payments</h4>
                   <ul className="space-y-2 text-sm">
-                    {paymentsPag.pageItems.map((p) => (
+                    {paymentsPag.pageItems.map((p) => {
+                      const status = p.status ?? 'Approved'
+                      const isPending = status === 'Pending'
+                      return (
                       <li
                         key={p.id}
-                        className="flex flex-wrap justify-between gap-2 rounded-lg border border-slate-800 px-3 py-2"
+                        className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-800 px-3 py-2"
                       >
                         <span>
                           {p.direction === 'ToAdmin' ? '→ Admin' : '← From admin'}{' '}
@@ -1673,12 +1831,43 @@ function BranchesPage() {
                           {p.note && (
                             <span className="ml-2 text-slate-500">({p.note})</span>
                           )}
+                          <span
+                            className={`ml-2 rounded px-1.5 py-0.5 text-xs ${
+                              isPending
+                                ? 'bg-amber-900/40 text-amber-200'
+                                : status === 'Rejected'
+                                  ? 'bg-red-900/40 text-red-300'
+                                  : 'bg-emerald-900/30 text-emerald-300'
+                            }`}
+                          >
+                            {status}
+                          </span>
                         </span>
-                        <span className="text-slate-500">
+                        <span className="flex flex-wrap items-center gap-2 text-slate-500">
                           {new Date(p.createdAt).toLocaleString()} · {p.recordedByName}
+                          {isAdmin && isPending && (
+                            <>
+                              <button
+                                type="button"
+                                disabled={paymentActionId === p.id}
+                                onClick={() => void settlePayment(p.id, 'approve')}
+                                className="rounded bg-emerald-700 px-2 py-0.5 text-xs text-white hover:bg-emerald-600 disabled:opacity-50"
+                              >
+                                Approve
+                              </button>
+                              <button
+                                type="button"
+                                disabled={paymentActionId === p.id}
+                                onClick={() => void settlePayment(p.id, 'reject')}
+                                className="rounded bg-slate-700 px-2 py-0.5 text-xs text-white hover:bg-slate-600 disabled:opacity-50"
+                              >
+                                Reject
+                              </button>
+                            </>
+                          )}
                         </span>
                       </li>
-                    ))}
+                    )})}
                   </ul>
                   <ListPagination
                     page={paymentsPag.page}
@@ -2661,6 +2850,163 @@ function LiveMapPage() {
           />
         </div>
       </div>
+    </div>
+  )
+}
+
+type CustomerRow = {
+  phone: string
+  senderName: string | null
+  senderAddress: string | null
+  sentCount: number
+  receiverName: string | null
+  receiverAddress: string | null
+  receivedCount: number
+}
+
+function CustomersPage() {
+  const role = localStorage.getItem('transport_role')
+  const isAdmin = role === 'Admin'
+  const isBranchManager = role === 'BranchManager'
+  const [customers, setCustomers] = useState<CustomerRow[]>([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const [phoneSearch, setPhoneSearch] = useState('')
+  const [searchInput, setSearchInput] = useState('')
+
+  const load = useCallback(async (phone?: string) => {
+    setLoading(true)
+    setError(null)
+    const qs = phone?.trim() ? `?phone=${encodeURIComponent(phone.trim())}` : ''
+    const res = await apiFetch(`/api/customers${qs}`)
+    setLoading(false)
+    if (!res.ok) {
+      const j = await res.json().catch(() => ({}))
+      setError((j as { error?: string }).error ?? 'Could not load customers')
+      setCustomers([])
+      return
+    }
+    setCustomers(await res.json())
+  }, [])
+
+  useEffect(() => {
+    if (!isAdmin && !isBranchManager) return
+    void load()
+  }, [load, isAdmin, isBranchManager])
+
+  const runSearch = (e: React.FormEvent) => {
+    e.preventDefault()
+    setPhoneSearch(searchInput.trim())
+    void load(searchInput.trim() || undefined)
+  }
+
+  const clearSearch = () => {
+    setSearchInput('')
+    setPhoneSearch('')
+    void load()
+  }
+
+  const customersPag = useListPagination(customers)
+
+  if (!isAdmin && !isBranchManager) {
+    return <Navigate to="/map" replace />
+  }
+
+  return (
+    <div>
+      <h2 className="mb-2 text-xl font-semibold text-white">Customers</h2>
+      <p className="mb-6 text-sm text-slate-400">
+        {isAdmin
+          ? 'All senders and receivers across the network, with shipment counts.'
+          : 'Senders and receivers linked to your branch through shipments, with shipment counts.'}
+      </p>
+
+      <form onSubmit={runSearch} className="mb-6 flex flex-wrap gap-3">
+        <input
+          type="search"
+          placeholder="Filter by phone"
+          className="min-w-[12rem] flex-1 rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-white"
+          value={searchInput}
+          onChange={(e) => setSearchInput(e.target.value)}
+        />
+        <button
+          type="submit"
+          className="flex items-center gap-2 rounded-lg bg-violet-600 px-4 py-2 text-white hover:bg-violet-500"
+        >
+          <Search size={16} /> Search
+        </button>
+        {phoneSearch && (
+          <button
+            type="button"
+            onClick={clearSearch}
+            className="rounded-lg border border-slate-600 px-4 py-2 text-slate-300 hover:bg-slate-800"
+          >
+            Clear
+          </button>
+        )}
+      </form>
+
+      {error && (
+        <p className="mb-4 rounded-lg border border-red-900/50 bg-red-950/30 px-3 py-2 text-sm text-red-400">
+          {error}
+        </p>
+      )}
+
+      {loading ? (
+        <p className="text-slate-400">Loading…</p>
+      ) : (
+        <div className="overflow-hidden rounded-xl border border-slate-800">
+          <table className="w-full text-left text-sm">
+            <thead className="bg-slate-900 text-slate-400">
+              <tr>
+                <th className="px-4 py-3">Phone</th>
+                <th className="px-4 py-3">Sender name</th>
+                <th className="px-4 py-3">Sender address</th>
+                <th className="px-4 py-3 text-right">Sent</th>
+                <th className="px-4 py-3">Receiver name</th>
+                <th className="px-4 py-3">Receiver address</th>
+                <th className="px-4 py-3 text-right">Received</th>
+                <th className="px-4 py-3 text-right">Total</th>
+              </tr>
+            </thead>
+            <tbody>
+              {customersPag.pageItems.length === 0 ? (
+                <tr>
+                  <td colSpan={8} className="px-4 py-8 text-center text-slate-500">
+                    {phoneSearch ? 'No customers match this phone.' : 'No customers yet.'}
+                  </td>
+                </tr>
+              ) : (
+                customersPag.pageItems.map((c) => (
+                  <tr key={c.phone} className="border-t border-slate-800">
+                    <td className="px-4 py-3 font-mono text-emerald-300">{c.phone}</td>
+                    <td className="px-4 py-3 text-white">{c.senderName ?? '—'}</td>
+                    <td className="max-w-[10rem] truncate px-4 py-3 text-slate-400" title={c.senderAddress ?? undefined}>
+                      {c.senderAddress ?? '—'}
+                    </td>
+                    <td className="px-4 py-3 text-right font-mono text-white">{c.sentCount}</td>
+                    <td className="px-4 py-3 text-white">{c.receiverName ?? '—'}</td>
+                    <td className="max-w-[10rem] truncate px-4 py-3 text-slate-400" title={c.receiverAddress ?? undefined}>
+                      {c.receiverAddress ?? '—'}
+                    </td>
+                    <td className="px-4 py-3 text-right font-mono text-white">{c.receivedCount}</td>
+                    <td className="px-4 py-3 text-right font-mono font-semibold text-violet-300">
+                      {c.sentCount + c.receivedCount}
+                    </td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+          <ListPagination
+            page={customersPag.page}
+            totalPages={customersPag.totalPages}
+            total={customersPag.total}
+            pageSize={customersPag.pageSize}
+            onPageChange={customersPag.setPage}
+          />
+        </div>
+      )}
     </div>
   )
 }
@@ -5103,6 +5449,7 @@ function DashboardRoutes() {
         <Route path="/branch-managers" element={<BranchManagersPage />} />
         <Route path="/staff" element={<StaffPage />} />
         <Route path="/products" element={<ProductsPage />} />
+        <Route path="/customers" element={<CustomersPage />} />
         <Route path="/qr" element={<QrLabelPage />} />
         <Route path="/trips" element={<TripsPage />} />
         <Route path="/driver-earnings" element={<DriverEarningsPage />} />

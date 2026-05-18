@@ -167,13 +167,9 @@ public class TransportService(
             collectedAsDestination,
             destinationShippingTotal);
 
-        var paidToAdmin = await repo.BranchSettlementPayments.AsNoTracking()
-            .Where(p => p.BranchId == branchId && p.Direction == BranchSettlementDirection.ToAdmin)
-            .SumAsync(p => (decimal?)p.Amount, ct) ?? 0m;
-
-        var paidFromAdmin = await repo.BranchSettlementPayments.AsNoTracking()
-            .Where(p => p.BranchId == branchId && p.Direction == BranchSettlementDirection.FromAdmin)
-            .SumAsync(p => (decimal?)p.Amount, ct) ?? 0m;
+        var paidToAdmin = await SumApprovedPaymentsAsync(branchId, BranchSettlementDirection.ToAdmin, ct);
+        var paidFromAdmin = await SumApprovedPaymentsAsync(branchId, BranchSettlementDirection.FromAdmin, ct);
+        var pendingToAdmin = await SumPendingPaymentsAsync(branchId, BranchSettlementDirection.ToAdmin, ct);
 
         var (dueToAdmin, dueFromAdmin) = BranchSettlementCalculator.ComputeBalances(netSettlement, paidToAdmin, paidFromAdmin);
 
@@ -187,7 +183,8 @@ public class TransportService(
                 p.Direction.ToString(),
                 p.Note,
                 p.CreatedAt,
-                p.RecordedBy.FullName))
+                p.RecordedBy.FullName,
+                p.Status.ToString()))
             .ToListAsync(ct);
 
         return Results.Ok(new BranchSettlementDto(
@@ -202,6 +199,7 @@ public class TransportService(
             netSettlement,
             paidToAdmin,
             paidFromAdmin,
+            pendingToAdmin,
             dueToAdmin,
             dueFromAdmin,
             recentPayments));
@@ -254,34 +252,161 @@ public class TransportService(
             collectedAsDestination,
             destinationShippingTotal);
 
-        var paidToAdmin = await repo.BranchSettlementPayments.AsNoTracking()
-            .Where(p => p.BranchId == branchId && p.Direction == BranchSettlementDirection.ToAdmin)
-            .SumAsync(p => (decimal?)p.Amount, ct) ?? 0m;
-        var paidFromAdmin = await repo.BranchSettlementPayments.AsNoTracking()
-            .Where(p => p.BranchId == branchId && p.Direction == BranchSettlementDirection.FromAdmin)
-            .SumAsync(p => (decimal?)p.Amount, ct) ?? 0m;
+        var paidToAdmin = await SumApprovedPaymentsAsync(branchId, BranchSettlementDirection.ToAdmin, ct);
+        var paidFromAdmin = await SumApprovedPaymentsAsync(branchId, BranchSettlementDirection.FromAdmin, ct);
+        var pendingToAdmin = await SumPendingPaymentsAsync(branchId, BranchSettlementDirection.ToAdmin, ct);
 
         var (dueToAdmin, dueFromAdmin) = BranchSettlementCalculator.ComputeBalances(netSettlement, paidToAdmin, paidFromAdmin);
 
-        if (direction == BranchSettlementDirection.ToAdmin && body.Amount > dueToAdmin + 0.01m)
-            return Results.BadRequest(new { error = "Payment exceeds amount due to admin." });
-        if (direction == BranchSettlementDirection.FromAdmin && body.Amount > dueFromAdmin + 0.01m)
+        if (direction == BranchSettlementDirection.ToAdmin)
+        {
+            var availableToPay = dueToAdmin - pendingToAdmin;
+            if (body.Amount > availableToPay + 0.01m)
+                return Results.BadRequest(new { error = "Payment exceeds amount due to admin (including pending payments)." });
+        }
+        else if (body.Amount > dueFromAdmin + 0.01m)
             return Results.BadRequest(new { error = "Payment exceeds amount due from admin." });
 
+        var isAdmin = principal.IsInRole(nameof(UserRole.Admin));
+        var now = DateTime.UtcNow;
+        var userId = GetUserId(principal);
         var payment = new BranchSettlementPayment
         {
             BranchId = branchId,
             Amount = Math.Round(body.Amount, 2, MidpointRounding.AwayFromZero),
             Direction = direction,
             Note = string.IsNullOrWhiteSpace(body.Note) ? null : body.Note.Trim(),
-            CreatedAt = DateTime.UtcNow,
-            RecordedByUserId = GetUserId(principal)
+            CreatedAt = now,
+            RecordedByUserId = userId,
+            Status = isAdmin ? BranchSettlementPaymentStatus.Approved : BranchSettlementPaymentStatus.Pending
         };
+
+        if (isAdmin)
+        {
+            payment.ApprovedByUserId = userId;
+            payment.ApprovedAt = now;
+        }
 
         await repo.AddAsync(payment, ct);
         await repo.SaveChangesAsync(ct);
 
         return await GetBranchSettlementAsync(branchId, null, null, principal, ct);
+    }
+
+    public async Task<IResult> GetPendingBranchSettlementPaymentsAsync(ClaimsPrincipal principal, CancellationToken ct = default)
+    {
+        if (!principal.IsInRole(nameof(UserRole.Admin))) return Results.Forbid();
+
+        var pending = await repo.BranchSettlementPayments.AsNoTracking()
+            .Where(p => p.Status == BranchSettlementPaymentStatus.Pending)
+            .OrderBy(p => p.CreatedAt)
+            .Select(p => new BranchSettlementPaymentDto(
+                p.Id,
+                p.Amount,
+                p.Direction.ToString(),
+                p.Note,
+                p.CreatedAt,
+                p.RecordedBy.FullName,
+                p.Status.ToString(),
+                p.Branch.BranchName))
+            .ToListAsync(ct);
+
+        return Results.Ok(pending);
+    }
+
+    public async Task<IResult> ApproveBranchSettlementPaymentAsync(int paymentId, ClaimsPrincipal principal, CancellationToken ct = default)
+    {
+        if (!principal.IsInRole(nameof(UserRole.Admin))) return Results.Forbid();
+
+        var payment = await repo.BranchSettlementPayments
+            .FirstOrDefaultAsync(p => p.Id == paymentId, ct);
+        if (payment is null) return Results.NotFound();
+        if (payment.Status != BranchSettlementPaymentStatus.Pending)
+            return Results.BadRequest(new { error = "Only pending payments can be approved." });
+
+        var validation = await ValidateSettlementPaymentApprovalAsync(payment, ct);
+        if (validation is not null) return validation;
+
+        var now = DateTime.UtcNow;
+        payment.Status = BranchSettlementPaymentStatus.Approved;
+        payment.ApprovedByUserId = GetUserId(principal);
+        payment.ApprovedAt = now;
+        await repo.SaveChangesAsync(ct);
+
+        return await GetBranchSettlementAsync(payment.BranchId, null, null, principal, ct);
+    }
+
+    public async Task<IResult> RejectBranchSettlementPaymentAsync(int paymentId, ClaimsPrincipal principal, CancellationToken ct = default)
+    {
+        if (!principal.IsInRole(nameof(UserRole.Admin))) return Results.Forbid();
+
+        var payment = await repo.BranchSettlementPayments
+            .FirstOrDefaultAsync(p => p.Id == paymentId, ct);
+        if (payment is null) return Results.NotFound();
+        if (payment.Status != BranchSettlementPaymentStatus.Pending)
+            return Results.BadRequest(new { error = "Only pending payments can be rejected." });
+
+        payment.Status = BranchSettlementPaymentStatus.Rejected;
+        payment.ApprovedByUserId = GetUserId(principal);
+        payment.ApprovedAt = DateTime.UtcNow;
+        await repo.SaveChangesAsync(ct);
+
+        return await GetBranchSettlementAsync(payment.BranchId, null, null, principal, ct);
+    }
+
+    private async Task<decimal> SumApprovedPaymentsAsync(int branchId, BranchSettlementDirection direction, CancellationToken ct) =>
+        await repo.BranchSettlementPayments.AsNoTracking()
+            .Where(p => p.BranchId == branchId
+                        && p.Direction == direction
+                        && p.Status == BranchSettlementPaymentStatus.Approved)
+            .SumAsync(p => (decimal?)p.Amount, ct) ?? 0m;
+
+    private async Task<decimal> SumPendingPaymentsAsync(int branchId, BranchSettlementDirection direction, CancellationToken ct) =>
+        await repo.BranchSettlementPayments.AsNoTracking()
+            .Where(p => p.BranchId == branchId
+                        && p.Direction == direction
+                        && p.Status == BranchSettlementPaymentStatus.Pending)
+            .SumAsync(p => (decimal?)p.Amount, ct) ?? 0m;
+
+    private async Task<IResult?> ValidateSettlementPaymentApprovalAsync(BranchSettlementPayment payment, CancellationToken ct)
+    {
+        var branch = await repo.Branches.AsNoTracking().FirstOrDefaultAsync(b => b.Id == payment.BranchId, ct);
+        if (branch is null) return Results.NotFound();
+
+        var delivered = repo.Products.AsNoTracking()
+            .Where(p => p.Status == ProductStatus.Delivered && p.DeliveredAt != null);
+
+        var collectedAsOrigin = await delivered.Where(p => p.OriginBranchId == payment.BranchId)
+            .SumAsync(p => (decimal?)p.AmountReceivedAtOrigin, ct) ?? 0m;
+        var collectedAsDestination = await delivered.Where(p => p.DestinationBranchId == payment.BranchId)
+            .SumAsync(p => (decimal?)p.AmountReceivedAtDestination, ct) ?? 0m;
+        var destinationShippingTotal = await delivered.Where(p => p.DestinationBranchId == payment.BranchId)
+            .SumAsync(p => (decimal?)p.ShippingPrice, ct) ?? 0m;
+
+        var (_, _, _, _, netSettlement) = BranchSettlementCalculator.Compute(
+            branch.SettlementType,
+            branch.CommissionPercent,
+            collectedAsOrigin,
+            collectedAsDestination,
+            destinationShippingTotal);
+
+        var paidToAdmin = await SumApprovedPaymentsAsync(payment.BranchId, BranchSettlementDirection.ToAdmin, ct);
+        var paidFromAdmin = await SumApprovedPaymentsAsync(payment.BranchId, BranchSettlementDirection.FromAdmin, ct);
+        var pendingToAdmin = await SumPendingPaymentsAsync(payment.BranchId, BranchSettlementDirection.ToAdmin, ct);
+
+        var (dueToAdmin, dueFromAdmin) = BranchSettlementCalculator.ComputeBalances(netSettlement, paidToAdmin, paidFromAdmin);
+
+        if (payment.Direction == BranchSettlementDirection.ToAdmin)
+        {
+            var otherPending = pendingToAdmin - payment.Amount;
+            var available = dueToAdmin - otherPending;
+            if (payment.Amount > available + 0.01m)
+                return Results.BadRequest(new { error = "Approving this payment would exceed the amount due to admin." });
+        }
+        else if (payment.Amount > dueFromAdmin + 0.01m)
+            return Results.BadRequest(new { error = "Approving this payment would exceed the amount due from admin." });
+
+        return null;
     }
 
     public async Task<IResult> DeleteBranchAsync(int id, ClaimsPrincipal principal, CancellationToken ct = default)
@@ -1604,6 +1729,70 @@ public class TransportService(
         return Results.Ok(list);
     }
 
+    public async Task<IResult> GetCustomersAsync(
+        ClaimsPrincipal principal,
+        string? phone = null,
+        CancellationToken ct = default)
+    {
+        if (!principal.IsInRole(nameof(UserRole.Admin)) && !principal.IsInRole(nameof(UserRole.BranchManager)))
+            return Results.Forbid();
+
+        IQueryable<Product> query = repo.Products.AsNoTracking();
+
+        if (principal.IsInRole(nameof(UserRole.BranchManager)))
+        {
+            var branchIdResult = TryGetBranchId(principal, "Branch manager must have a branch assigned.");
+            if (branchIdResult.error is not null) return branchIdResult.error;
+            var bid = branchIdResult.branchId!.Value;
+            query = query.Where(p => p.OriginBranchId == bid || p.DestinationBranchId == bid || p.CurrentBranchId == bid);
+        }
+
+        var phoneTerm = phone?.Trim();
+        if (!string.IsNullOrEmpty(phoneTerm))
+        {
+            query = query.Where(p =>
+                EF.Functions.ILike(p.SenderPhone, $"%{phoneTerm}%") ||
+                EF.Functions.ILike(p.ReceiverPhone, $"%{phoneTerm}%"));
+        }
+
+        var rows = await query
+            .OrderByDescending(p => p.CreatedAt)
+            .Select(p => new
+            {
+                p.SenderPhone,
+                p.SenderName,
+                p.SenderAddress,
+                p.ReceiverPhone,
+                p.ReceiverName,
+                p.ReceiverAddress,
+                p.CreatedAt
+            })
+            .ToListAsync(ct);
+
+        var customers = new Dictionary<string, CustomerAccumulator>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var row in rows)
+        {
+            ApplySenderRole(customers, row.SenderPhone, row.SenderName, row.SenderAddress, row.CreatedAt);
+            ApplyReceiverRole(customers, row.ReceiverPhone, row.ReceiverName, row.ReceiverAddress, row.CreatedAt);
+        }
+
+        var list = customers.Values
+            .Select(c => new CustomerListItemDto(
+                c.DisplayPhone,
+                c.SenderName,
+                c.SenderAddress,
+                c.SentCount,
+                c.ReceiverName,
+                c.ReceiverAddress,
+                c.ReceivedCount))
+            .OrderByDescending(c => c.SentCount + c.ReceivedCount)
+            .ThenBy(c => c.Phone, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        return Results.Ok(list);
+    }
+
     public async Task<IResult> GetProductDetailAsync(Guid id, ClaimsPrincipal principal, CancellationToken ct = default)
     {
         if (!principal.IsInRole(nameof(UserRole.Admin)) && !principal.IsInRole(nameof(UserRole.BranchManager)))
@@ -1963,6 +2152,75 @@ public class TransportService(
 
     private static bool ProductTouchesBranch(Product p, int bid) =>
         p.OriginBranchId == bid || p.DestinationBranchId == bid || p.CurrentBranchId == bid;
+
+    private static string? CustomerPhoneKey(string? phone)
+    {
+        var trimmed = phone?.Trim();
+        return string.IsNullOrEmpty(trimmed) ? null : trimmed;
+    }
+
+    private static void ApplySenderRole(
+        Dictionary<string, CustomerAccumulator> customers,
+        string phone,
+        string name,
+        string address,
+        DateTime createdAt)
+    {
+        var key = CustomerPhoneKey(phone);
+        if (key is null) return;
+
+        if (!customers.TryGetValue(key, out var entry))
+        {
+            entry = new CustomerAccumulator { DisplayPhone = phone.Trim() };
+            customers[key] = entry;
+        }
+
+        entry.SentCount++;
+        if (entry.LastSenderAt is null || createdAt >= entry.LastSenderAt)
+        {
+            entry.LastSenderAt = createdAt;
+            entry.SenderName = name;
+            entry.SenderAddress = address;
+        }
+    }
+
+    private static void ApplyReceiverRole(
+        Dictionary<string, CustomerAccumulator> customers,
+        string phone,
+        string name,
+        string address,
+        DateTime createdAt)
+    {
+        var key = CustomerPhoneKey(phone);
+        if (key is null) return;
+
+        if (!customers.TryGetValue(key, out var entry))
+        {
+            entry = new CustomerAccumulator { DisplayPhone = phone.Trim() };
+            customers[key] = entry;
+        }
+
+        entry.ReceivedCount++;
+        if (entry.LastReceiverAt is null || createdAt >= entry.LastReceiverAt)
+        {
+            entry.LastReceiverAt = createdAt;
+            entry.ReceiverName = name;
+            entry.ReceiverAddress = address;
+        }
+    }
+
+    private sealed class CustomerAccumulator
+    {
+        public string DisplayPhone { get; set; } = "";
+        public string? SenderName { get; set; }
+        public string? SenderAddress { get; set; }
+        public int SentCount { get; set; }
+        public DateTime? LastSenderAt { get; set; }
+        public string? ReceiverName { get; set; }
+        public string? ReceiverAddress { get; set; }
+        public int ReceivedCount { get; set; }
+        public DateTime? LastReceiverAt { get; set; }
+    }
 
     private static (int? branchId, IResult? error) TryGetBranchId(ClaimsPrincipal principal, string message)
     {

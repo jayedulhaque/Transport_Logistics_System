@@ -63,6 +63,7 @@ public class TransportDbContext(DbContextOptions<TransportDbContext> options) : 
         {
             entity.Property(p => p.Amount).HasPrecision(18, 2);
             entity.Property(p => p.Direction).HasConversion<string>();
+            entity.Property(p => p.Status).HasConversion<string>();
             entity.HasOne(p => p.Branch)
                 .WithMany(b => b.SettlementPayments)
                 .HasForeignKey(p => p.BranchId)
@@ -70,6 +71,10 @@ public class TransportDbContext(DbContextOptions<TransportDbContext> options) : 
             entity.HasOne(p => p.RecordedBy)
                 .WithMany()
                 .HasForeignKey(p => p.RecordedByUserId)
+                .OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne(p => p.ApprovedBy)
+                .WithMany()
+                .HasForeignKey(p => p.ApprovedByUserId)
                 .OnDelete(DeleteBehavior.Restrict);
         });
 
