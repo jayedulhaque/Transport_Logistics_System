@@ -12,6 +12,7 @@ public class BranchSettlementPayment
     public DateTime CreatedAt { get; set; }
     public int RecordedByUserId { get; set; }
     public BranchSettlementPaymentStatus Status { get; set; } = BranchSettlementPaymentStatus.Approved;
+    public PaymentMethod PaymentMethod { get; set; } = PaymentMethod.Cash;
     public int? ApprovedByUserId { get; set; }
     public DateTime? ApprovedAt { get; set; }
 

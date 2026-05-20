@@ -42,7 +42,7 @@ import shadow from 'leaflet/dist/images/marker-shadow.png'
 import { MapContainer, Marker as LeafletMarker, Popup, TileLayer, useMap } from 'react-leaflet'
 import { apiFetch, getToken, signalrBase } from './api'
 
-/** Two-decimal display; dampens binary float noise from JSON (e.g. 399.99999999994 â†’ "400.00"). */
+/** Two-decimal display; dampens binary float noise from JSON (e.g. 399.99999999994 ? "400.00"). */
 function formatMoneyDisplay(value: number): string {
   if (!Number.isFinite(value)) return '0.00'
   return (Math.round(value * 100) / 100).toFixed(2)
@@ -55,6 +55,15 @@ function toMoneyCents(value: number): number {
 }
 
 const LIST_PAGE_SIZE = 10
+
+const PAYMENT_METHODS = ['BKash', 'Cash', 'BankAccount'] as const
+type PaymentMethodValue = (typeof PAYMENT_METHODS)[number]
+
+function formatPaymentMethodLabel(method: string): string {
+  if (method === 'BankAccount') return 'Bank Account'
+  if (method === 'BKash') return 'bKash'
+  return method
+}
 
 function useListPagination<T>(items: T[], pageSize = LIST_PAGE_SIZE) {
   const [page, setPage] = useState(1)
@@ -97,7 +106,7 @@ function ListPagination({
   return (
     <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-800 bg-slate-900/50 px-4 py-3 text-sm text-slate-400">
       <span>
-        Showing {from}–{to} of {total}
+        Showing {from}?{to} of {total}
       </span>
       <div className="flex items-center gap-2">
         <button
@@ -186,6 +195,9 @@ type Branch = {
   address: string
   settlementType: string
   commissionPercent: number | null
+  bKashNumber: string | null
+  bankAccountNumber: string | null
+  bankRoutingNumber: string | null
 }
 
 type BranchSettlement = {
@@ -193,6 +205,9 @@ type BranchSettlement = {
   branchName: string
   settlementType: string
   commissionPercent: number | null
+  bKashNumber: string | null
+  bankAccountNumber: string | null
+  bankRoutingNumber: string | null
   collectedAsOrigin: number
   collectedAsDestination: number
   destinationShippingTotal: number
@@ -211,6 +226,7 @@ type BranchSettlement = {
     createdAt: string
     recordedByName: string
     status: string
+    paymentMethod: string
     branchName?: string | null
   }[]
 }
@@ -398,7 +414,7 @@ function LoginPage() {
           </Link>
         </p>
         <p className="mt-2 text-center text-xs text-slate-500">
-          Defaults: admin / Admin123! Â· branchmanager / Manager123!
+          Defaults: admin / Admin123! ? branchmanager / Manager123!
         </p>
       </form>
     </div>
@@ -457,7 +473,7 @@ function ForgotPasswordPage() {
           disabled={sending}
           className="w-full rounded-lg bg-violet-600 py-2 font-medium text-white hover:bg-violet-500 disabled:opacity-50"
         >
-          {sending ? 'Sending…' : 'Send reset link'}
+          {sending ? 'Sending?' : 'Send reset link'}
         </button>
         <p className="mt-4 text-center text-sm">
           <Link to="/login" className="text-violet-400 hover:text-violet-300">
@@ -558,7 +574,7 @@ function ResetPasswordPage() {
           disabled={saving}
           className="w-full rounded-lg bg-violet-600 py-2 font-medium text-white hover:bg-violet-500 disabled:opacity-50"
         >
-          {saving ? 'Saving…' : 'Update password'}
+          {saving ? 'Saving?' : 'Update password'}
         </button>
       </form>
     </div>
@@ -664,7 +680,7 @@ function ResetUserPasswordButton({ apiPath, accountLabel }: { apiPath: string; a
                 disabled={saving}
                 className="rounded-lg bg-violet-600 px-4 py-2 text-white hover:bg-violet-500 disabled:opacity-50"
               >
-                {saving ? 'Saving…' : 'Set password'}
+                {saving ? 'Saving?' : 'Set password'}
               </button>
               <button
                 type="button"
@@ -868,7 +884,7 @@ function ApprovalsPage() {
   const saveDriver = async (r: PendingDriver) => {
     const e = driverEdits[r.id] ?? getDriverEdit(r)
     if (!isValidMobile(e.phone)) {
-      setError('Enter a valid mobile number (9â€“15 digits).')
+      setError('Enter a valid mobile number (9?15 digits).')
       return
     }
     if (!e.vehicleNumber.trim()) {
@@ -908,7 +924,7 @@ function ApprovalsPage() {
   const pendingPaymentsPag = useListPagination(pendingPayments)
   const approvedPag = useListPagination(approved)
 
-  if (loading) return <p className="text-slate-400">Loadingâ€¦</p>
+  if (loading) return <p className="text-slate-400">Loading?</p>
 
   return (
     <div className="space-y-10">
@@ -974,7 +990,7 @@ function ApprovalsPage() {
                         onClick={() => void saveDriver(r)}
                         className="rounded-lg border border-violet-700/60 px-3 py-1 text-xs text-violet-200 hover:bg-violet-900/40 disabled:opacity-50"
                       >
-                        {savingDriverId === r.id ? 'Saving…' : 'Save'}
+                        {savingDriverId === r.id ? 'Saving?' : 'Save'}
                       </button>
                       <button
                         type="button"
@@ -1041,11 +1057,11 @@ function ApprovalsPage() {
                 ) : (
                   pendingPaymentsPag.pageItems.map((p) => (
                     <tr key={p.id} className="border-t border-slate-800">
-                      <td className="px-4 py-3">{p.branchName ?? '—'}</td>
+                      <td className="px-4 py-3">{p.branchName ?? '?'}</td>
                       <td className="px-4 py-3 font-mono text-white">
                         {formatMoneyDisplay(Number(p.amount))}
                       </td>
-                      <td className="px-4 py-3 text-slate-400">{p.note ?? '—'}</td>
+                      <td className="px-4 py-3 text-slate-400">{p.note ?? '?'}</td>
                       <td className="px-4 py-3">{p.recordedByName}</td>
                       <td className="px-4 py-3 text-slate-500">
                         {new Date(p.createdAt).toLocaleString()}
@@ -1151,7 +1167,7 @@ function ApprovalsPage() {
                         onClick={() => void saveDriver(r)}
                         className="rounded-lg border border-violet-700/60 px-3 py-1 text-xs text-violet-200 hover:bg-violet-900/40 disabled:opacity-50"
                       >
-                        {savingDriverId === r.id ? 'Saving…' : 'Save'}
+                        {savingDriverId === r.id ? 'Saving?' : 'Save'}
                       </button>
                       <ResetUserPasswordButton
                         apiPath={`/api/drivers/${r.id}/reset-password`}
@@ -1232,7 +1248,7 @@ function BranchTable({
                 <td className="px-4 py-3 text-slate-300">
                   {b.settlementType === 'Commission' && b.commissionPercent != null
                     ? `${b.commissionPercent}%`
-                    : '—'}
+                    : '?'}
                 </td>
                 <td className="px-4 py-3 text-right whitespace-nowrap">
                   <button
@@ -1295,6 +1311,9 @@ function BranchesPage() {
   const [formAddress, setFormAddress] = useState('')
   const [formSettlementType, setFormSettlementType] = useState<'Normal' | 'Commission'>('Normal')
   const [formCommissionPercent, setFormCommissionPercent] = useState('')
+  const [formBKashNumber, setFormBKashNumber] = useState('')
+  const [formBankAccountNumber, setFormBankAccountNumber] = useState('')
+  const [formBankRoutingNumber, setFormBankRoutingNumber] = useState('')
   const [editingId, setEditingId] = useState<number | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
@@ -1307,6 +1326,7 @@ function BranchesPage() {
   const [payAmount, setPayAmount] = useState('')
   const [payDirection, setPayDirection] = useState<'ToAdmin' | 'FromAdmin'>('ToAdmin')
   const [payNote, setPayNote] = useState('')
+  const [payMethod, setPayMethod] = useState<PaymentMethodValue>('Cash')
   const [paySaving, setPaySaving] = useState(false)
   const [paymentActionId, setPaymentActionId] = useState<number | null>(null)
 
@@ -1369,6 +1389,9 @@ function BranchesPage() {
     setFormAddress('')
     setFormSettlementType('Normal')
     setFormCommissionPercent('')
+    setFormBKashNumber('')
+    setFormBankAccountNumber('')
+    setFormBankRoutingNumber('')
     setEditingId(null)
     setError(null)
   }
@@ -1384,6 +1407,9 @@ function BranchesPage() {
     setFormCommissionPercent(
       b.commissionPercent != null ? String(b.commissionPercent) : ''
     )
+    setFormBKashNumber(b.bKashNumber ?? '')
+    setFormBankAccountNumber(b.bankAccountNumber ?? '')
+    setFormBankRoutingNumber(b.bankRoutingNumber ?? '')
     setError(null)
   }
 
@@ -1392,6 +1418,7 @@ function BranchesPage() {
     setPayAmount('')
     setPayNote('')
     setPayDirection('ToAdmin')
+    setPayMethod('Cash')
     setSettlementError(null)
   }
 
@@ -1409,6 +1436,9 @@ function BranchesPage() {
       address: formAddress,
       settlementType: formSettlementType,
       commissionPercent: commission,
+      bKashNumber: formBKashNumber.trim() || null,
+      bankAccountNumber: formBankAccountNumber.trim() || null,
+      bankRoutingNumber: formBankRoutingNumber.trim() || null,
     })
     const res = editingId
       ? await apiFetch(`/api/branches/${editingId}`, { method: 'PUT', body })
@@ -1460,6 +1490,7 @@ function BranchesPage() {
       body: JSON.stringify({
         amount,
         direction: payDirection,
+        paymentMethod: payMethod,
         note: payNote.trim() || null,
       }),
     })
@@ -1472,6 +1503,7 @@ function BranchesPage() {
     setSettlement(await res.json())
     setPayAmount('')
     setPayNote('')
+    setPayMethod('Cash')
   }
 
   const settlePayment = async (paymentId: number, action: 'approve' | 'reject') => {
@@ -1555,8 +1587,8 @@ function BranchesPage() {
                   setFormSettlementType(e.target.value as 'Normal' | 'Commission')
                 }
               >
-                <option value="Normal">Normal — all collections payable to admin</option>
-                <option value="Commission">Commission — % on destination delivery only</option>
+                <option value="Normal">Normal ? all collections payable to admin</option>
+                <option value="Commission">Commission ? % on destination delivery only</option>
               </select>
             </div>
             {formSettlementType === 'Commission' && (
@@ -1575,6 +1607,42 @@ function BranchesPage() {
                 />
               </div>
             )}
+            <div className="md:col-span-2 mt-2 border-t border-slate-800 pt-4">
+              <p className="mb-3 text-sm font-medium text-slate-300">Payout details</p>
+              <p className="mb-3 text-xs text-slate-500">
+                Shown to admin when paying this branch via bKash or bank transfer.
+              </p>
+              <div className="grid gap-4 md:grid-cols-3">
+                <div>
+                  <label className="text-sm text-slate-400">bKash number</label>
+                  <input
+                    type="tel"
+                    className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 font-mono text-white"
+                    value={formBKashNumber}
+                    onChange={(e) => setFormBKashNumber(e.target.value)}
+                    placeholder="e.g. 01712345678"
+                  />
+                </div>
+                <div>
+                  <label className="text-sm text-slate-400">Bank account number</label>
+                  <input
+                    className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 font-mono text-white"
+                    value={formBankAccountNumber}
+                    onChange={(e) => setFormBankAccountNumber(e.target.value)}
+                    placeholder="Account number"
+                  />
+                </div>
+                <div>
+                  <label className="text-sm text-slate-400">Bank routing number</label>
+                  <input
+                    className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 font-mono text-white"
+                    value={formBankRoutingNumber}
+                    onChange={(e) => setFormBankRoutingNumber(e.target.value)}
+                    placeholder="Routing / branch code"
+                  />
+                </div>
+              </div>
+            </div>
           </div>
           {error && <p className="mt-3 text-sm text-red-400">{error}</p>}
           <div className="mt-4 flex flex-wrap gap-2">
@@ -1583,7 +1651,7 @@ function BranchesPage() {
               disabled={saving}
               className="rounded-lg bg-violet-600 px-4 py-2 text-white hover:bg-violet-500 disabled:opacity-50"
             >
-              {saving ? 'Saving…' : editingId ? 'Update branch' : 'Create branch'}
+              {saving ? 'Saving?' : editingId ? 'Update branch' : 'Create branch'}
             </button>
             {editingId && (
               <button
@@ -1606,7 +1674,7 @@ function BranchesPage() {
       )}
 
       <BranchTable
-        title="Category 1 — Normal branches"
+        title="Category 1 ? Normal branches"
         description="All cash collected at origin and destination is payable to admin. Partial payments to admin are tracked."
         rows={normalBranches}
         isAdmin={isAdmin}
@@ -1617,7 +1685,7 @@ function BranchesPage() {
       />
 
       <BranchTable
-        title="Category 2 — Commission branches"
+        title="Category 2 ? Commission branches"
         description="Origin: 100% to admin. Destination: commission on shipping price; branch keeps commission and remits the rest."
         rows={commissionBranches}
         isAdmin={isAdmin}
@@ -1630,12 +1698,12 @@ function BranchesPage() {
       {selectedBranchId != null && (
         <div className="rounded-xl border border-violet-900/50 bg-slate-900/50 p-6">
           <h3 className="mb-1 text-lg font-medium text-white">
-            Settlement — {settlement?.branchName ?? '…'}
+            Settlement ? {settlement?.branchName ?? '?'}
           </h3>
           <p className="mb-4 text-xs text-slate-500">
             Delivered products only
             {settlementFrom || settlementTo
-              ? ` (${settlementFrom || '…'} to ${settlementTo || '…'})`
+              ? ` (${settlementFrom || '?'} to ${settlementTo || '?'})`
               : ' (all time)'}
             . Approved payments reduce the balance; branch-manager payments to admin require admin approval.
           </p>
@@ -1665,7 +1733,7 @@ function BranchesPage() {
               disabled={settlementLoading}
               className="rounded-lg bg-slate-700 px-4 py-2 text-sm text-white hover:bg-slate-600 disabled:opacity-50"
             >
-              {settlementLoading ? 'Loading…' : 'Apply dates'}
+              {settlementLoading ? 'Loading?' : 'Apply dates'}
             </button>
           </div>
 
@@ -1711,7 +1779,7 @@ function BranchesPage() {
                     {formatMoneyDisplay(Number(settlement.netSettlement))}
                   </p>
                   <p className="text-xs text-slate-600">
-                    + branch owes admin · − admin owes branch
+                    + branch owes admin ? - admin owes branch
                   </p>
                 </div>
               </div>
@@ -1727,7 +1795,7 @@ function BranchesPage() {
                     {(settlement.pendingToAdmin ?? 0) > 0 && (
                       <>
                         {' '}
-                        · Pending:{' '}
+                        ? Pending:{' '}
                         {formatMoneyDisplay(Number(settlement.pendingToAdmin))}
                       </>
                     )}
@@ -1778,6 +1846,18 @@ function BranchesPage() {
                       onChange={(e) => setPayAmount(e.target.value)}
                       required
                     />
+                    <select
+                      className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-white"
+                      value={payMethod}
+                      onChange={(e) => setPayMethod(e.target.value as PaymentMethodValue)}
+                      title="Payment method"
+                    >
+                      {PAYMENT_METHODS.map((m) => (
+                        <option key={m} value={m}>
+                          {formatPaymentMethodLabel(m)}
+                        </option>
+                      ))}
+                    </select>
                     <input
                       type="text"
                       placeholder="Note (optional)"
@@ -1791,7 +1871,7 @@ function BranchesPage() {
                       className="rounded-lg bg-violet-600 px-4 py-2 text-white hover:bg-violet-500 disabled:opacity-50"
                     >
                       {paySaving
-                        ? 'Saving…'
+                        ? 'Saving?'
                         : isAdmin
                           ? 'Record payment'
                           : 'Submit for approval'}
@@ -1803,9 +1883,45 @@ function BranchesPage() {
                       the balance.
                     </p>
                   )}
-                  {isAdmin && (
+                  {isAdmin && payDirection === 'FromAdmin' && payMethod === 'BKash' && (
+                    <div className="mt-3 w-full rounded-lg border border-emerald-900/40 bg-emerald-950/20 px-3 py-2 text-sm">
+                      <p className="font-medium text-emerald-200">Pay via bKash</p>
+                      <p className="mt-1 font-mono text-emerald-100">
+                        {settlement.bKashNumber?.trim() || 'No bKash number on file for this branch.'}
+                      </p>
+                    </div>
+                  )}
+                  {isAdmin && payDirection === 'FromAdmin' && payMethod === 'BankAccount' && (
+                    <div className="mt-3 w-full rounded-lg border border-sky-900/40 bg-sky-950/20 px-3 py-2 text-sm">
+                      <p className="font-medium text-sky-200">Pay via bank account</p>
+                      <p className="mt-1 text-sky-100">
+                        Account:{' '}
+                        <span className="font-mono">
+                          {settlement.bankAccountNumber?.trim() || '?'}
+                        </span>
+                      </p>
+                      <p className="mt-1 text-sky-100">
+                        Routing:{' '}
+                        <span className="font-mono">
+                          {settlement.bankRoutingNumber?.trim() || '?'}
+                        </span>
+                      </p>
+                      {(!settlement.bankAccountNumber?.trim() ||
+                        !settlement.bankRoutingNumber?.trim()) && (
+                        <p className="mt-2 text-xs text-amber-400/90">
+                          Bank details missing ? update the branch payout settings.
+                        </p>
+                      )}
+                    </div>
+                  )}
+                  {isAdmin && payDirection === 'FromAdmin' && (
                     <p className="mt-2 text-xs text-slate-500">
-                      Admin-recorded payments (to or from admin) are settled immediately.
+                      Select how you paid the branch. Payment is settled immediately.
+                    </p>
+                  )}
+                  {isAdmin && payDirection === 'ToAdmin' && (
+                    <p className="mt-2 text-xs text-slate-500">
+                      Admin-recorded payments to admin are settled immediately.
                     </p>
                   )}
                 </form>
@@ -1824,7 +1940,7 @@ function BranchesPage() {
                         className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-800 px-3 py-2"
                       >
                         <span>
-                          {p.direction === 'ToAdmin' ? '→ Admin' : '← From admin'}{' '}
+                          {p.direction === 'ToAdmin' ? '? Admin' : '? From admin'}{' '}
                           <span className="font-mono text-white">
                             {formatMoneyDisplay(Number(p.amount))}
                           </span>
@@ -1842,9 +1958,12 @@ function BranchesPage() {
                           >
                             {status}
                           </span>
+                          <span className="ml-2 text-xs text-slate-500">
+                            ? {formatPaymentMethodLabel(p.paymentMethod ?? 'Cash')}
+                          </span>
                         </span>
                         <span className="flex flex-wrap items-center gap-2 text-slate-500">
-                          {new Date(p.createdAt).toLocaleString()} · {p.recordedByName}
+                          {new Date(p.createdAt).toLocaleString()} ? {p.recordedByName}
                           {isAdmin && isPending && (
                             <>
                               <button
@@ -1928,7 +2047,7 @@ function StaffPage() {
   const staffPag = useListPagination(staffRows)
 
   if (!isAdmin && !isBranchManager) return <Navigate to="/map" replace />
-  if (loading) return <p className="text-slate-400">Loadingâ€¦</p>
+  if (loading) return <p className="text-slate-400">Loading?</p>
 
   const createStaff = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -2089,7 +2208,7 @@ function StaffPage() {
             disabled={creating}
             className="rounded-lg bg-violet-600 px-4 py-2 text-white hover:bg-violet-500 disabled:opacity-50"
           >
-            {creating ? 'Creatingâ€¦' : 'Create staff'}
+            {creating ? 'Creating?' : 'Create staff'}
           </button>
         </div>
       </form>
@@ -2110,7 +2229,7 @@ function StaffPage() {
               <tr key={s.id} className="border-t border-slate-800">
                 <td className="px-4 py-3">{s.fullName}</td>
                 <td className="px-4 py-3">{s.phone}</td>
-                <td className="px-4 py-3 text-slate-300">{s.branchName ?? 'â€”'}</td>
+                <td className="px-4 py-3 text-slate-300">{s.branchName ?? '?'}</td>
                 <td className="px-4 py-3">
                   {s.isActive ? (
                     <span className="text-emerald-400">Yes</span>
@@ -2213,7 +2332,7 @@ function StaffPage() {
                 disabled={saving}
                 className="rounded-lg bg-violet-600 px-4 py-2 text-white hover:bg-violet-500 disabled:opacity-50"
               >
-                {saving ? 'Saving…' : 'Save'}
+                {saving ? 'Saving?' : 'Save'}
               </button>
               <button
                 type="button"
@@ -2264,7 +2383,7 @@ function BranchManagersPage() {
   const managersPag = useListPagination(rows)
 
   if (role !== 'Admin') return <Navigate to="/map" replace />
-  if (loading) return <p className="text-slate-400">Loadingâ€¦</p>
+  if (loading) return <p className="text-slate-400">Loading?</p>
 
   const createManager = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -2415,7 +2534,7 @@ function BranchManagersPage() {
             disabled={creating}
             className="rounded-lg bg-violet-600 px-4 py-2 text-white hover:bg-violet-500 disabled:opacity-50"
           >
-            {creating ? 'Creatingâ€¦' : 'Create branch manager'}
+            {creating ? 'Creating?' : 'Create branch manager'}
           </button>
         </div>
       </form>
@@ -2436,7 +2555,7 @@ function BranchManagersPage() {
               <tr key={s.id} className="border-t border-slate-800">
                 <td className="px-4 py-3">{s.fullName}</td>
                 <td className="px-4 py-3">{s.phone}</td>
-                <td className="px-4 py-3 text-slate-300">{s.branchName ?? 'â€”'}</td>
+                <td className="px-4 py-3 text-slate-300">{s.branchName ?? '?'}</td>
                 <td className="px-4 py-3">
                   {s.isActive ? (
                     <span className="text-emerald-400">Yes</span>
@@ -2538,7 +2657,7 @@ function BranchManagersPage() {
                 disabled={saving}
                 className="rounded-lg bg-violet-600 px-4 py-2 text-white hover:bg-violet-500 disabled:opacity-50"
               >
-                {saving ? 'Saving…' : 'Save'}
+                {saving ? 'Saving?' : 'Save'}
               </button>
               <button
                 type="button"
@@ -2618,7 +2737,7 @@ function OsmLiveMap({
         >
           <Popup>
             <span className="text-slate-900">
-              {d.fullName} Â· {d.vehicleNumber} (#{d.driverProfileId})
+              {d.fullName} ? {d.vehicleNumber} (#{d.driverProfileId})
             </span>
           </Popup>
         </LeafletMarker>
@@ -2743,12 +2862,12 @@ function LiveMapPage() {
         {connection?.state === HubConnectionState.Connected ? (
           <span className="text-emerald-400">connected</span>
         ) : (
-          <span className="text-amber-400">connectingâ€¦</span>
+          <span className="text-amber-400">connecting?</span>
         )}
         {apiKey ? (
-          <span className="text-slate-600"> Â· Google Maps</span>
+          <span className="text-slate-600"> ? Google Maps</span>
         ) : (
-          <span className="text-slate-600"> Â· OpenStreetMap (set VITE_GOOGLE_MAPS_API_KEY for Google tiles)</span>
+          <span className="text-slate-600"> ? OpenStreetMap (set VITE_GOOGLE_MAPS_API_KEY for Google tiles)</span>
         )}
       </p>
 
@@ -2765,7 +2884,7 @@ function LiveMapPage() {
                   <Marker
                     key={d.driverProfileId}
                     position={{ lat: d.lat, lng: d.lng }}
-                    title={`${d.fullName} Â· ${d.vehicleNumber} (#${d.driverProfileId})`}
+                    title={`${d.fullName} ? ${d.vehicleNumber} (#${d.driverProfileId})`}
                     onClick={() => setSelectedId(d.driverProfileId)}
                   />
                 ))}
@@ -2814,7 +2933,7 @@ function LiveMapPage() {
                   >
                     <div className="font-medium">{d.fullName}</div>
                     <div className="text-xs text-slate-400">
-                      {d.vehicleNumber} Â· #{d.driverProfileId}
+                      {d.vehicleNumber} ? #{d.driverProfileId}
                       {d.isOnline ? (
                         <span className="ml-2 text-emerald-400">online</span>
                       ) : (
@@ -2953,7 +3072,7 @@ function CustomersPage() {
       )}
 
       {loading ? (
-        <p className="text-slate-400">Loading…</p>
+        <p className="text-slate-400">Loading?</p>
       ) : (
         <div className="overflow-hidden rounded-xl border border-slate-800">
           <table className="w-full text-left text-sm">
@@ -2980,14 +3099,14 @@ function CustomersPage() {
                 customersPag.pageItems.map((c) => (
                   <tr key={c.phone} className="border-t border-slate-800">
                     <td className="px-4 py-3 font-mono text-emerald-300">{c.phone}</td>
-                    <td className="px-4 py-3 text-white">{c.senderName ?? '—'}</td>
+                    <td className="px-4 py-3 text-white">{c.senderName ?? '?'}</td>
                     <td className="max-w-[10rem] truncate px-4 py-3 text-slate-400" title={c.senderAddress ?? undefined}>
-                      {c.senderAddress ?? '—'}
+                      {c.senderAddress ?? '?'}
                     </td>
                     <td className="px-4 py-3 text-right font-mono text-white">{c.sentCount}</td>
-                    <td className="px-4 py-3 text-white">{c.receiverName ?? '—'}</td>
+                    <td className="px-4 py-3 text-white">{c.receiverName ?? '?'}</td>
                     <td className="max-w-[10rem] truncate px-4 py-3 text-slate-400" title={c.receiverAddress ?? undefined}>
-                      {c.receiverAddress ?? '—'}
+                      {c.receiverAddress ?? '?'}
                     </td>
                     <td className="px-4 py-3 text-right font-mono text-white">{c.receivedCount}</td>
                     <td className="px-4 py-3 text-right font-mono font-semibold text-violet-300">
@@ -3245,7 +3364,7 @@ function ProductsPage() {
 
   const productsPag = useListPagination(products)
 
-  if (loading) return <p className="text-slate-400">Loading…</p>
+  if (loading) return <p className="text-slate-400">Loading?</p>
 
   return (
     <div>
@@ -3298,7 +3417,7 @@ function ProductsPage() {
             type="search"
             className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white"
             placeholder={
-              searchMode === 'tracking' ? 'e.g. TN-abc123â€¦' : 'Sender or receiver phone'
+              searchMode === 'tracking' ? 'e.g. TN-abc123?' : 'Sender or receiver phone'
             }
             value={searchInput}
             onChange={(e) => setSearchInput(e.target.value)}
@@ -3464,7 +3583,7 @@ function ProductsPage() {
             className="max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-2xl border border-slate-700 bg-slate-950 p-6 shadow-xl"
             onClick={(e) => e.stopPropagation()}
           >
-            {detailLoading && <p className="text-slate-400">Loading details…</p>}
+            {detailLoading && <p className="text-slate-400">Loading details?</p>}
             {detail && !detailLoading && (
               <>
                 <div className="mb-4 flex items-start justify-between gap-4">
@@ -3474,7 +3593,7 @@ function ProductsPage() {
                     <p className="text-xs text-slate-500">{detail.status}</p>
                   </div>
                   <button type="button" onClick={closeDetail} className="text-slate-400 hover:text-white">
-                    ✕
+                    ?
                   </button>
                 </div>
 
@@ -3509,7 +3628,7 @@ function ProductsPage() {
                   {detail.originBranchManager ? (
                     <p className="mt-2 text-sm text-slate-200">
                       <span className="text-slate-500">Origin ({detail.originBranchManager.branchName}):</span>{' '}
-                      {detail.originBranchManager.fullName} ·{' '}
+                      {detail.originBranchManager.fullName} ?{' '}
                       <span className="font-mono text-emerald-300">{detail.originBranchManager.phone}</span>
                     </p>
                   ) : (
@@ -3520,7 +3639,7 @@ function ProductsPage() {
                       <span className="text-slate-500">
                         Destination ({detail.destinationBranchManager.branchName}):
                       </span>{' '}
-                      {detail.destinationBranchManager.fullName} ·{' '}
+                      {detail.destinationBranchManager.fullName} ?{' '}
                       <span className="font-mono text-emerald-300">{detail.destinationBranchManager.phone}</span>
                     </p>
                   ) : (
@@ -3536,11 +3655,11 @@ function ProductsPage() {
                       <p className="font-mono text-sm text-emerald-300">{detail.trip.driverPhone}</p>
                       <p className="text-xs text-slate-400">Vehicle {detail.trip.vehicleNumber}</p>
                       <p className="mt-2 text-xs text-slate-400">
-                        Trip {detail.trip.tripId.slice(0, 8)}… · {detail.trip.status} ·{' '}
+                        Trip {detail.trip.tripId.slice(0, 8)}? ? {detail.trip.status} ?{' '}
                         {new Date(detail.trip.loadTime).toLocaleString()}
                       </p>
                       <p className="text-xs text-slate-400">
-                        {detail.trip.originBranchName} → {detail.trip.destinationBranchesLabel}
+                        {detail.trip.originBranchName} ? {detail.trip.destinationBranchesLabel}
                       </p>
                       <p className="text-xs text-amber-300">
                         Trip pay {Number(detail.trip.driverPaymentAmount).toFixed(2)}
@@ -3553,7 +3672,7 @@ function ProductsPage() {
 
                 <section className="rounded-lg border border-slate-800 bg-slate-900/50 p-3 text-xs text-slate-400">
                   <p>
-                    Shipping {Number(detail.shippingPrice).toFixed(2)} · Due{' '}
+                    Shipping {Number(detail.shippingPrice).toFixed(2)} ? Due{' '}
                     {Number(detail.dueAmount).toFixed(2)}
                   </p>
                   <p className="mt-1">Created {new Date(detail.createdAt).toLocaleString()}</p>
@@ -3720,7 +3839,7 @@ function ProductsPage() {
                 disabled={saving}
                 className="rounded-lg bg-violet-600 px-4 py-2 text-white hover:bg-violet-500 disabled:opacity-50"
               >
-                {saving ? 'Saving…' : 'Save'}
+                {saving ? 'Saving?' : 'Save'}
               </button>
               <button
                 type="button"
@@ -3756,14 +3875,14 @@ function ProductsPage() {
             {deliverDue <= 0 ? (
               <p className="mb-4 rounded-lg border border-emerald-900/40 bg-emerald-950/25 px-3 py-2 text-sm text-emerald-200/90">
                 Shipping was paid in full at the origin branch (sender). There is no balance to collect at
-                destination â€” only receiver phone verification is required.
+                destination ? only receiver phone verification is required.
               </p>
             ) : (
               <p className="mb-4 rounded-lg border border-amber-900/40 bg-amber-950/20 px-3 py-2 text-sm text-amber-100/90">
                 Partial payment was taken at origin. Collect the remaining balance from the receiver at this
                 branch:{' '}
                 <span className="font-mono font-semibold text-amber-200">{deliverDue.toFixed(2)}</span>.
-                Enter that full amount below â€” Confirm delivery stays hidden until it matches exactly.
+                Enter that full amount below ? Confirm delivery stays hidden until it matches exactly.
               </p>
             )}
 
@@ -3809,7 +3928,7 @@ function ProductsPage() {
                   disabled={deliverSaving}
                   className="rounded-lg bg-emerald-600 px-4 py-2 text-white hover:bg-emerald-500 disabled:opacity-50"
                 >
-                  {deliverSaving ? 'Saving…' : 'Confirm delivery'}
+                  {deliverSaving ? 'Saving?' : 'Confirm delivery'}
                 </button>
               )}
               <button
@@ -4025,7 +4144,7 @@ function QrLabelPage() {
             disabled={isBranchManager}
           >
             {branches.length === 0 ? (
-              <option value="">No branches â€” add branches first</option>
+              <option value="">No branches ? add branches first</option>
             ) : (
               branchOptions
             )}
@@ -4040,7 +4159,7 @@ function QrLabelPage() {
             required
           >
             {branches.length === 0 ? (
-              <option value="">No branches â€” add branches first</option>
+              <option value="">No branches ? add branches first</option>
             ) : (
               branchOptions
             )}
@@ -4114,7 +4233,7 @@ function QrLabelPage() {
               disabled={submitting || branches.length === 0}
               className="rounded-lg bg-violet-600 px-4 py-2 text-white hover:bg-violet-500 disabled:opacity-50"
             >
-              {submitting ? 'Creatingâ€¦' : 'Create product'}
+              {submitting ? 'Creating?' : 'Create product'}
             </button>
             {(isAdmin || isBranchManager) && (
               <button
@@ -4273,7 +4392,7 @@ function ReportsPage() {
       </p>
       {isAdmin && reportBranches.length > 0 && (
         <div className="mb-6 max-w-md rounded-xl border border-slate-800 bg-slate-900/40 p-4">
-          <label className="text-sm text-slate-400">Booking volume report â€” sending (origin) branch</label>
+          <label className="text-sm text-slate-400">Booking volume report ? sending (origin) branch</label>
           <select
             value={bookingOriginId}
             onChange={(e) => setBookingOriginId(Number(e.target.value))}
@@ -4287,7 +4406,7 @@ function ReportsPage() {
           </select>
           <p className="mt-2 text-xs text-slate-500">
             Counts only <strong className="text-slate-400">Pending</strong> parcels still at the origin (not yet on a
-            trip), grouped by destination â€” same date range as below, by booking date.
+            trip), grouped by destination ? same date range as below, by booking date.
           </p>
         </div>
       )}
@@ -4352,7 +4471,7 @@ function ReportsPage() {
           {bookingError}
         </p>
       )}
-      {loading && <p className="mb-4 text-slate-400">Loadingâ€¦</p>}
+      {loading && <p className="mb-4 text-slate-400">Loading?</p>}
       <div className="overflow-hidden rounded-xl border border-slate-800">
         <table className="w-full text-left text-sm">
           <thead className="bg-slate-900 text-slate-400">
@@ -4398,11 +4517,11 @@ function ReportsPage() {
 
       <div className="mt-8 overflow-x-auto rounded-xl border border-slate-800">
         <div className="border-b border-slate-800 bg-slate-900 px-4 py-3">
-          <h3 className="text-sm font-semibold text-white">Pending at origin â€” by destination (routing priority)</h3>
+          <h3 className="text-sm font-semibold text-white">Pending at origin ? by destination (routing priority)</h3>
           <p className="mt-1 text-xs text-slate-400">
             From your sending branch: how many <span className="text-slate-300">Pending</span> parcels (still at
             origin, not loaded on a trip) are destined for each branch in the date range (by{' '}
-            <span className="text-slate-300">booking date</span>). Highest counts first â€” prioritize routes and hubs
+            <span className="text-slate-300">booking date</span>). Highest counts first ? prioritize routes and hubs
             with the largest backlog.
             {isBranchManager && ' Your branch is always the origin for this table.'}
           </p>
@@ -4560,7 +4679,7 @@ function ConfigurationPage() {
   }, [role, load])
 
   if (role !== 'Admin') return <Navigate to="/map" replace />
-  if (loading) return <p className="text-slate-400">Loadingâ€¦</p>
+  if (loading) return <p className="text-slate-400">Loading?</p>
 
   const save = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -4610,7 +4729,7 @@ function ConfigurationPage() {
           disabled={saving}
           className="mt-4 rounded-lg bg-violet-600 px-4 py-2 text-white hover:bg-violet-500 disabled:opacity-50"
         >
-          {saving ? 'Saving…' : 'Save'}
+          {saving ? 'Saving?' : 'Save'}
         </button>
       </form>
     </div>
@@ -4783,13 +4902,13 @@ function TripsPage() {
 
   const driverOpts = drivers.map((d) => (
     <option key={d.id} value={d.id}>
-      {d.fullName} Â· {d.vehicleNumber}
+      {d.fullName} ? {d.vehicleNumber}
     </option>
   ))
 
   const tripsPag = useListPagination(trips)
 
-  if (loading) return <p className="text-slate-400">Loadingâ€¦</p>
+  if (loading) return <p className="text-slate-400">Loading?</p>
 
   return (
     <div>
@@ -4873,7 +4992,7 @@ function TripsPage() {
             disabled={saving || branches.length === 0}
             className="rounded-lg bg-violet-600 px-4 py-2 text-white hover:bg-violet-500 disabled:opacity-50"
           >
-            {saving ? 'Saving…' : 'Create trip'}
+            {saving ? 'Saving?' : 'Create trip'}
           </button>
         </div>
       </form>
@@ -4884,7 +5003,7 @@ function TripsPage() {
             <tr>
               <th className="px-4 py-3">When</th>
               <th className="px-4 py-3">Driver</th>
-              <th className="px-4 py-3">Origin â†’ dest</th>
+              <th className="px-4 py-3">Origin ? dest</th>
               <th className="px-4 py-3">Status</th>
               <th className="px-4 py-3 text-right">Payment</th>
               <th className="px-4 py-3 text-right">Products</th>
@@ -4901,7 +5020,7 @@ function TripsPage() {
                   <span className="block text-xs text-slate-500">{t.vehicleNumber}</span>
                 </td>
                 <td className="px-4 py-3 text-slate-300">
-                  {t.originBranchName} â†’ {t.destinationBranchesLabel}
+                  {t.originBranchName} ? {t.destinationBranchesLabel}
                 </td>
                 <td className="px-4 py-3">
                   <span
@@ -5012,7 +5131,7 @@ function TripsPage() {
                 disabled={saving}
                 className="rounded-lg bg-violet-600 px-4 py-2 text-white hover:bg-violet-500 disabled:opacity-50"
               >
-                {saving ? 'Saving…' : 'Save'}
+                {saving ? 'Saving?' : 'Save'}
               </button>
               <button
                 type="button"
@@ -5035,9 +5154,75 @@ type EarningsRow = {
   vehicleNumber: string
   branchId: number | null
   branchName: string | null
+  preferredPaymentMethod: string | null
+  bKashNumber: string | null
+  bankAccountNumber: string | null
+  bankRoutingNumber: string | null
   accruedTripEarnings: number
   paidToDriver: number
   due: number
+}
+
+function normalizeEarningsRow(raw: Record<string, unknown>): EarningsRow {
+  const str = (v: unknown) => (typeof v === 'string' ? v : v == null ? null : String(v))
+  const num = (v: unknown) => Number(v ?? 0)
+  return {
+    driverProfileId: num(raw.driverProfileId ?? raw.DriverProfileId),
+    fullName: str(raw.fullName ?? raw.FullName) ?? '',
+    vehicleNumber: str(raw.vehicleNumber ?? raw.VehicleNumber) ?? '',
+    branchId:
+      raw.branchId != null || raw.BranchId != null
+        ? num(raw.branchId ?? raw.BranchId)
+        : null,
+    branchName: str(raw.branchName ?? raw.BranchName),
+    preferredPaymentMethod: str(raw.preferredPaymentMethod ?? raw.PreferredPaymentMethod),
+    bKashNumber: str(raw.bKashNumber ?? raw.BKashNumber),
+    bankAccountNumber: str(raw.bankAccountNumber ?? raw.BankAccountNumber),
+    bankRoutingNumber: str(raw.bankRoutingNumber ?? raw.BankRoutingNumber),
+    accruedTripEarnings: num(raw.accruedTripEarnings ?? raw.AccruedTripEarnings),
+    paidToDriver: num(raw.paidToDriver ?? raw.PaidToDriver),
+    due: num(raw.due ?? raw.Due),
+  }
+}
+
+function DriverPayPayoutDetails({
+  driver,
+  payMethod,
+}: {
+  driver: EarningsRow
+  payMethod: PaymentMethodValue
+}) {
+  if (payMethod === 'BKash') {
+    return (
+      <div className="mt-3 w-full rounded-lg border border-emerald-900/40 bg-emerald-950/20 px-3 py-2 text-sm">
+        <p className="font-medium text-emerald-200">Pay via bKash</p>
+        <p className="mt-1 font-mono text-emerald-100">
+          {driver.bKashNumber?.trim() || 'No bKash number on file for this driver.'}
+        </p>
+      </div>
+    )
+  }
+  if (payMethod === 'BankAccount') {
+    return (
+      <div className="mt-3 w-full rounded-lg border border-sky-900/40 bg-sky-950/20 px-3 py-2 text-sm">
+        <p className="font-medium text-sky-200">Pay via bank account</p>
+        <p className="mt-1 text-sky-100">
+          Routing:{' '}
+          <span className="font-mono">{driver.bankRoutingNumber?.trim() || '—'}</span>
+        </p>
+        <p className="mt-1 text-sky-100">
+          Account:{' '}
+          <span className="font-mono">{driver.bankAccountNumber?.trim() || '—'}</span>
+        </p>
+        {(!driver.bankAccountNumber?.trim() || !driver.bankRoutingNumber?.trim()) && (
+          <p className="mt-2 text-xs text-amber-400/90">
+            Bank details missing — ask the driver to update their profile.
+          </p>
+        )}
+      </div>
+    )
+  }
+  return null
 }
 
 function DriverEarningsPage() {
@@ -5049,13 +5234,17 @@ function DriverEarningsPage() {
   const [error, setError] = useState<string | null>(null)
   const [payOpen, setPayOpen] = useState<EarningsRow | null>(null)
   const [payAmount, setPayAmount] = useState('')
+  const [payMethod, setPayMethod] = useState<PaymentMethodValue>('Cash')
   const [paySaving, setPaySaving] = useState(false)
 
   const load = useCallback(async () => {
     setLoading(true)
     setError(null)
     const res = await apiFetch('/api/drivers/earnings')
-    if (res.ok) setRows(await res.json())
+    if (res.ok) {
+      const data = (await res.json()) as Record<string, unknown>[]
+      setRows(Array.isArray(data) ? data.map(normalizeEarningsRow) : [])
+    }
     else {
       setRows([])
       const j = await res.json().catch(() => ({}))
@@ -5087,7 +5276,7 @@ function DriverEarningsPage() {
     setError(null)
     const res = await apiFetch(`/api/drivers/${payOpen.driverProfileId}/pay-earnings`, {
       method: 'POST',
-      body: JSON.stringify({ amount: amt }),
+      body: JSON.stringify({ amount: amt, paymentMethod: payMethod }),
     })
     setPaySaving(false)
     if (!res.ok) {
@@ -5102,7 +5291,7 @@ function DriverEarningsPage() {
 
   const earningsPag = useListPagination(rows)
 
-  if (loading) return <p className="text-slate-400">Loadingâ€¦</p>
+  if (loading) return <p className="text-slate-400">Loading?</p>
 
   return (
     <div>
@@ -5118,6 +5307,7 @@ function DriverEarningsPage() {
             <tr>
               <th className="px-4 py-3">Driver</th>
               <th className="px-4 py-3">Branch</th>
+              <th className="px-4 py-3">Payout preference</th>
               <th className="px-4 py-3 text-right">Accrued</th>
               <th className="px-4 py-3 text-right">Paid</th>
               <th className="px-4 py-3 text-right">Due</th>
@@ -5131,7 +5321,12 @@ function DriverEarningsPage() {
                   {r.fullName}
                   <span className="block text-xs text-slate-500">{r.vehicleNumber}</span>
                 </td>
-                <td className="px-4 py-3 text-slate-400">{r.branchName ?? 'â€”'}</td>
+                <td className="px-4 py-3 text-slate-400">{r.branchName ?? '?'}</td>
+                <td className="px-4 py-3 text-slate-400">
+                  {r.preferredPaymentMethod
+                    ? formatPaymentMethodLabel(r.preferredPaymentMethod)
+                    : '?'}
+                </td>
                 <td className="px-4 py-3 text-right font-mono text-emerald-200/90">
                   {formatMoneyDisplay(Number(r.accruedTripEarnings))}
                 </td>
@@ -5148,6 +5343,10 @@ function DriverEarningsPage() {
                       onClick={() => {
                         setPayOpen(r)
                         setPayAmount(String(r.due))
+                        const pref = r.preferredPaymentMethod as PaymentMethodValue | null
+                        setPayMethod(
+                          pref && PAYMENT_METHODS.includes(pref) ? pref : 'Cash'
+                        )
                         setError(null)
                       }}
                       className="text-violet-400 hover:text-violet-300"
@@ -5160,7 +5359,7 @@ function DriverEarningsPage() {
             ))}
             {earningsPag.total === 0 && (
               <tr>
-                <td className="px-4 py-8 text-center text-slate-500" colSpan={6}>
+                <td className="px-4 py-8 text-center text-slate-500" colSpan={7}>
                   No drivers in scope.
                 </td>
               </tr>
@@ -5180,7 +5379,16 @@ function DriverEarningsPage() {
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
           <form onSubmit={submitPay} className="w-full max-w-sm rounded-xl border border-slate-700 bg-slate-950 p-6">
             <h3 className="mb-2 text-lg font-semibold text-white">Pay {payOpen.fullName}</h3>
-            <p className="mb-4 text-xs text-slate-500">Due: {formatMoneyDisplay(Number(payOpen.due))}</p>
+            <p className="mb-4 text-xs text-slate-500">
+              Due: {formatMoneyDisplay(Number(payOpen.due))}
+              {payOpen.preferredPaymentMethod && (
+                <>
+                  {' '}
+                  · Driver prefers{' '}
+                  {formatPaymentMethodLabel(payOpen.preferredPaymentMethod)}
+                </>
+              )}
+            </p>
             <label className="text-sm text-slate-400">Amount</label>
             <input
               type="number"
@@ -5191,13 +5399,26 @@ function DriverEarningsPage() {
               onChange={(e) => setPayAmount(e.target.value)}
               required
             />
+            <label className="mt-3 block text-sm text-slate-400">Payment method</label>
+            <select
+              className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-white"
+              value={payMethod}
+              onChange={(e) => setPayMethod(e.target.value as PaymentMethodValue)}
+            >
+              {PAYMENT_METHODS.map((m) => (
+                <option key={m} value={m}>
+                  {formatPaymentMethodLabel(m)}
+                </option>
+              ))}
+            </select>
+            <DriverPayPayoutDetails driver={payOpen} payMethod={payMethod} />
             <div className="mt-4 flex gap-2">
               <button
                 type="submit"
                 disabled={paySaving}
                 className="rounded-lg bg-violet-600 px-4 py-2 text-white hover:bg-violet-500 disabled:opacity-50"
               >
-                {paySaving ? 'Saving…' : 'Record payment'}
+                {paySaving ? 'Saving?' : 'Record payment'}
               </button>
               <button
                 type="button"
@@ -5320,7 +5541,7 @@ function AccountPage() {
         >
           <h3 className="mb-4 text-sm font-medium text-slate-300">Admin profile</h3>
           {profileLoading ? (
-            <p className="text-slate-400">Loading…</p>
+            <p className="text-slate-400">Loading?</p>
           ) : (
             <div className="space-y-4">
               <div>
@@ -5359,7 +5580,7 @@ function AccountPage() {
             disabled={profileSaving || profileLoading}
             className="mt-6 rounded-lg bg-violet-600 px-4 py-2 text-white hover:bg-violet-500 disabled:opacity-50"
           >
-            {profileSaving ? 'Saving…' : 'Save profile'}
+            {profileSaving ? 'Saving?' : 'Save profile'}
           </button>
         </form>
       )}
@@ -5415,7 +5636,7 @@ function AccountPage() {
           disabled={saving}
           className="mt-6 rounded-lg bg-violet-600 px-4 py-2 text-white hover:bg-violet-500 disabled:opacity-50"
         >
-          {saving ? 'Saving…' : 'Update password'}
+          {saving ? 'Saving?' : 'Update password'}
         </button>
       </form>
     </div>

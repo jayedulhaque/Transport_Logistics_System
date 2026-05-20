@@ -15,6 +15,7 @@ public class TransportDbContext(DbContextOptions<TransportDbContext> options) : 
     public DbSet<TripProduct> TripProducts => Set<TripProduct>();
     public DbSet<TripDestination> TripDestinations => Set<TripDestination>();
     public DbSet<BranchSettlementPayment> BranchSettlementPayments => Set<BranchSettlementPayment>();
+    public DbSet<DriverEarningsPayment> DriverEarningsPayments => Set<DriverEarningsPayment>();
     public DbSet<PasswordResetToken> PasswordResetTokens => Set<PasswordResetToken>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
@@ -46,10 +47,28 @@ public class TransportDbContext(DbContextOptions<TransportDbContext> options) : 
             entity.Property(d => d.CurrentLng).HasPrecision(18, 8);
             entity.Property(d => d.AccruedTripEarnings).HasPrecision(18, 2);
             entity.Property(d => d.PaidToDriver).HasPrecision(18, 2);
+            entity.Property(d => d.PreferredPaymentMethod).HasConversion<string>();
+            entity.Property(d => d.BKashNumber).HasMaxLength(20);
+            entity.Property(d => d.BankAccountNumber).HasMaxLength(50);
+            entity.Property(d => d.BankRoutingNumber).HasMaxLength(20);
             entity.HasOne(d => d.User)
                 .WithOne(u => u.DriverProfile)
                 .HasForeignKey<DriverProfile>(d => d.UserId)
                 .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<DriverEarningsPayment>(entity =>
+        {
+            entity.Property(p => p.Amount).HasPrecision(18, 2);
+            entity.Property(p => p.PaymentMethod).HasConversion<string>();
+            entity.HasOne(p => p.DriverProfile)
+                .WithMany(d => d.EarningsPayments)
+                .HasForeignKey(p => p.DriverProfileId)
+                .OnDelete(DeleteBehavior.Cascade);
+            entity.HasOne(p => p.RecordedBy)
+                .WithMany()
+                .HasForeignKey(p => p.RecordedByUserId)
+                .OnDelete(DeleteBehavior.Restrict);
         });
 
         modelBuilder.Entity<Branch>(entity =>
@@ -57,6 +76,9 @@ public class TransportDbContext(DbContextOptions<TransportDbContext> options) : 
             entity.HasIndex(b => b.Code).IsUnique();
             entity.Property(b => b.SettlementType).HasConversion<string>();
             entity.Property(b => b.CommissionPercent).HasPrecision(5, 2);
+            entity.Property(b => b.BKashNumber).HasMaxLength(20);
+            entity.Property(b => b.BankAccountNumber).HasMaxLength(50);
+            entity.Property(b => b.BankRoutingNumber).HasMaxLength(20);
         });
 
         modelBuilder.Entity<BranchSettlementPayment>(entity =>
@@ -64,6 +86,7 @@ public class TransportDbContext(DbContextOptions<TransportDbContext> options) : 
             entity.Property(p => p.Amount).HasPrecision(18, 2);
             entity.Property(p => p.Direction).HasConversion<string>();
             entity.Property(p => p.Status).HasConversion<string>();
+            entity.Property(p => p.PaymentMethod).HasConversion<string>();
             entity.HasOne(p => p.Branch)
                 .WithMany(b => b.SettlementPayments)
                 .HasForeignKey(p => p.BranchId)

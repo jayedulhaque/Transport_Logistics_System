@@ -27,7 +27,9 @@ public class TransportService(
     {
         var list = await repo.Branches.AsNoTracking()
             .OrderBy(b => b.Code)
-            .Select(b => new BranchDto(b.Id, b.BranchName, b.Code, b.Address, b.SettlementType.ToString(), b.CommissionPercent))
+            .Select(b => new BranchDto(
+                b.Id, b.BranchName, b.Code, b.Address, b.SettlementType.ToString(), b.CommissionPercent,
+                null, null, null))
             .ToListAsync(ct);
         return Results.Ok(list);
     }
@@ -38,7 +40,9 @@ public class TransportService(
         {
             var list = await repo.Branches.AsNoTracking()
                 .OrderBy(b => b.Code)
-                .Select(b => new BranchDto(b.Id, b.BranchName, b.Code, b.Address, b.SettlementType.ToString(), b.CommissionPercent))
+                .Select(b => new BranchDto(
+                    b.Id, b.BranchName, b.Code, b.Address, b.SettlementType.ToString(), b.CommissionPercent,
+                    b.BKashNumber, b.BankAccountNumber, b.BankRoutingNumber))
                 .ToListAsync(ct);
             return Results.Ok(list);
         }
@@ -51,7 +55,9 @@ public class TransportService(
 
             var row = await repo.Branches.AsNoTracking()
                 .Where(b => b.Id == branchId)
-                .Select(b => new BranchDto(b.Id, b.BranchName, b.Code, b.Address, b.SettlementType.ToString(), b.CommissionPercent))
+                .Select(b => new BranchDto(
+                    b.Id, b.BranchName, b.Code, b.Address, b.SettlementType.ToString(), b.CommissionPercent,
+                    b.BKashNumber, b.BankAccountNumber, b.BankRoutingNumber))
                 .FirstOrDefaultAsync(ct);
             return row is null ? Results.NotFound() : Results.Ok(new List<BranchDto> { row });
         }
@@ -78,13 +84,19 @@ public class TransportService(
         if (await repo.Branches.AnyAsync(b => b.Code == code, ct))
             return Results.Conflict(new { error = "A branch with this code already exists." });
 
+        var payoutResult = NormalizeBranchPayoutFields(body.BKashNumber, body.BankAccountNumber, body.BankRoutingNumber, out var bKash, out var bankAcct, out var bankRouting, out var payoutError);
+        if (payoutResult is not null) return payoutResult;
+
         var branch = new Branch
         {
             BranchName = name,
             Code = code,
             Address = address,
             SettlementType = settlementType,
-            CommissionPercent = commissionPercent
+            CommissionPercent = commissionPercent,
+            BKashNumber = bKash,
+            BankAccountNumber = bankAcct,
+            BankRoutingNumber = bankRouting
         };
         await repo.AddAsync(branch, ct);
         await repo.SaveChangesAsync(ct);
@@ -114,11 +126,17 @@ public class TransportService(
         if (await repo.Branches.AnyAsync(b => b.Code == code && b.Id != id, ct))
             return Results.Conflict(new { error = "A branch with this code already exists." });
 
+        var payoutResult = NormalizeBranchPayoutFields(body.BKashNumber, body.BankAccountNumber, body.BankRoutingNumber, out var bKash, out var bankAcct, out var bankRouting, out var payoutError);
+        if (payoutResult is not null) return payoutResult;
+
         branch.BranchName = name;
         branch.Code = code;
         branch.Address = address;
         branch.SettlementType = settlementType;
         branch.CommissionPercent = commissionPercent;
+        branch.BKashNumber = bKash;
+        branch.BankAccountNumber = bankAcct;
+        branch.BankRoutingNumber = bankRouting;
         await repo.SaveChangesAsync(ct);
         return Results.Ok(ToBranchDto(branch));
     }
@@ -184,7 +202,8 @@ public class TransportService(
                 p.Note,
                 p.CreatedAt,
                 p.RecordedBy.FullName,
-                p.Status.ToString()))
+                p.Status.ToString(),
+                p.PaymentMethod.ToString()))
             .ToListAsync(ct);
 
         return Results.Ok(new BranchSettlementDto(
@@ -192,6 +211,9 @@ public class TransportService(
             branch.BranchName,
             branch.SettlementType.ToString(),
             branch.CommissionPercent,
+            branch.BKashNumber,
+            branch.BankAccountNumber,
+            branch.BankRoutingNumber,
             origin,
             dest,
             shipping,
@@ -224,6 +246,9 @@ public class TransportService(
 
         if (body.Amount <= 0)
             return Results.BadRequest(new { error = "Payment amount must be greater than zero." });
+
+        if (!TryParsePaymentMethod(body.PaymentMethod, out var paymentMethod, out var paymentMethodError))
+            return Results.BadRequest(new { error = paymentMethodError });
 
         if (!Enum.TryParse<BranchSettlementDirection>(body.Direction?.Trim(), true, out var direction)
             || direction is not (BranchSettlementDirection.ToAdmin or BranchSettlementDirection.FromAdmin))
@@ -278,6 +303,7 @@ public class TransportService(
             Note = string.IsNullOrWhiteSpace(body.Note) ? null : body.Note.Trim(),
             CreatedAt = now,
             RecordedByUserId = userId,
+            PaymentMethod = paymentMethod,
             Status = isAdmin ? BranchSettlementPaymentStatus.Approved : BranchSettlementPaymentStatus.Pending
         };
 
@@ -308,6 +334,7 @@ public class TransportService(
                 p.CreatedAt,
                 p.RecordedBy.FullName,
                 p.Status.ToString(),
+                p.PaymentMethod.ToString(),
                 p.Branch.BranchName))
             .ToListAsync(ct);
 
@@ -993,7 +1020,11 @@ public class TransportService(
             profile.VehicleNumber,
             profile.User.BranchId,
             profile.User.Branch?.BranchName,
-            profile.IsApproved);
+            profile.IsApproved,
+            profile.PreferredPaymentMethod?.ToString(),
+            profile.BKashNumber,
+            profile.BankAccountNumber,
+            profile.BankRoutingNumber);
 
     async Task<IResult?> ApplyDriverProfileUpdateAsync(DriverProfile profile, UpdateDriverRequest body, CancellationToken ct)
     {
@@ -1012,7 +1043,84 @@ public class TransportService(
         profile.User.Phone = phone;
         profile.VehicleNumber = vehicle;
         profile.User.BranchId = body.BranchId;
+
+        var payoutFieldsProvided = body.BKashNumber is not null
+            || body.BankAccountNumber is not null
+            || body.BankRoutingNumber is not null;
+
+        if (body.PreferredPaymentMethod is not null)
+        {
+            if (string.IsNullOrWhiteSpace(body.PreferredPaymentMethod))
+                profile.PreferredPaymentMethod = null;
+            else if (!TryParsePaymentMethod(body.PreferredPaymentMethod, out var preferred, out var preferredError))
+                return Results.BadRequest(new { error = preferredError });
+            else
+                profile.PreferredPaymentMethod = preferred;
+        }
+
+        if (body.PreferredPaymentMethod is not null || payoutFieldsProvided)
+        {
+            var payoutResult = NormalizeBranchPayoutFields(
+                body.BKashNumber, body.BankAccountNumber, body.BankRoutingNumber,
+                out var bKash, out var bankAcct, out var bankRouting, out var payoutError);
+            if (payoutResult is not null) return payoutResult;
+
+            var payoutApplyResult = ApplyDriverPayoutDetails(profile, bKash, bankAcct, bankRouting);
+            if (payoutApplyResult is not null) return payoutApplyResult;
+        }
+
         return null;
+    }
+
+    private static IResult? ApplyDriverPayoutDetails(
+        DriverProfile profile,
+        string? bKash,
+        string? bankAcct,
+        string? bankRouting)
+    {
+        switch (profile.PreferredPaymentMethod)
+        {
+            case PaymentMethod.BKash:
+                if (string.IsNullOrEmpty(bKash))
+                    return Results.BadRequest(new { error = "bKash number is required when bKash is your payout method." });
+                profile.BKashNumber = bKash;
+                profile.BankAccountNumber = null;
+                profile.BankRoutingNumber = null;
+                break;
+            case PaymentMethod.BankAccount:
+                if (string.IsNullOrEmpty(bankAcct) || string.IsNullOrEmpty(bankRouting))
+                    return Results.BadRequest(new { error = "Bank account and routing numbers are required when bank account is your payout method." });
+                profile.BankAccountNumber = bankAcct;
+                profile.BankRoutingNumber = bankRouting;
+                profile.BKashNumber = null;
+                break;
+            default:
+                profile.BKashNumber = null;
+                profile.BankAccountNumber = null;
+                profile.BankRoutingNumber = null;
+                break;
+        }
+
+        return null;
+    }
+
+    private static bool TryParsePaymentMethod(string? value, out PaymentMethod method, out string? error)
+    {
+        method = default;
+        error = null;
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            error = "Payment method is required (BKash, Cash, or BankAccount).";
+            return false;
+        }
+
+        if (!Enum.TryParse<PaymentMethod>(value.Trim(), true, out method))
+        {
+            error = "Payment method must be BKash, Cash, or BankAccount.";
+            return false;
+        }
+
+        return true;
     }
 
     public async Task<IResult> ApproveDriverAsync(int id, ClaimsPrincipal principal, IHubContext<TransportHub> hub, CancellationToken ct = default)
@@ -1560,6 +1668,10 @@ public class TransportService(
                 d.VehicleNumber,
                 d.User.BranchId,
                 d.User.Branch?.BranchName,
+                d.PreferredPaymentMethod?.ToString(),
+                d.BKashNumber,
+                d.BankAccountNumber,
+                d.BankRoutingNumber,
                 accrued,
                 paid,
                 RoundMoney(accrued - paid));
@@ -1576,7 +1688,11 @@ public class TransportService(
         if (profile is null) return Results.NotFound();
         var accrued = RoundMoney(profile.AccruedTripEarnings);
         var paid = RoundMoney(profile.PaidToDriver);
-        return Results.Ok(new DriverMyEarningsDto(accrued, paid, RoundMoney(accrued - paid)));
+        return Results.Ok(new DriverMyEarningsDto(
+            accrued,
+            paid,
+            RoundMoney(accrued - paid),
+            profile.PreferredPaymentMethod?.ToString()));
     }
 
     public async Task<IResult> PayDriverEarningsAsync(int driverProfileId, PayDriverEarningsRequest body, ClaimsPrincipal principal, CancellationToken ct = default)
@@ -1584,6 +1700,8 @@ public class TransportService(
         if (!principal.IsInRole(nameof(UserRole.Admin)) && !principal.IsInRole(nameof(UserRole.BranchManager))) return Results.Forbid();
         var amount = RoundMoney(body.Amount);
         if (amount <= 0) return Results.BadRequest(new { error = "Amount must be greater than zero." });
+        if (!TryParsePaymentMethod(body.PaymentMethod, out var paymentMethod, out var paymentMethodError))
+            return Results.BadRequest(new { error = paymentMethodError });
 
         var profile = await repo.DriverProfiles.Include(d => d.User).FirstOrDefaultAsync(d => d.Id == driverProfileId, ct);
         if (profile is null) return Results.NotFound();
@@ -1600,6 +1718,14 @@ public class TransportService(
         if (amount > due) return Results.BadRequest(new { error = "Amount exceeds outstanding due." });
 
         profile.PaidToDriver = RoundMoney(profile.PaidToDriver + amount);
+        await repo.AddAsync(new DriverEarningsPayment
+        {
+            DriverProfileId = profile.Id,
+            Amount = amount,
+            PaymentMethod = paymentMethod,
+            RecordedByUserId = GetUserId(principal),
+            CreatedAt = DateTime.UtcNow
+        }, ct);
         await repo.SaveChangesAsync(ct);
         return Results.NoContent();
     }
@@ -2250,7 +2376,41 @@ public class TransportService(
     }
 
     private static BranchDto ToBranchDto(Branch branch) =>
-        new(branch.Id, branch.BranchName, branch.Code, branch.Address, branch.SettlementType.ToString(), branch.CommissionPercent);
+        new(
+            branch.Id,
+            branch.BranchName,
+            branch.Code,
+            branch.Address,
+            branch.SettlementType.ToString(),
+            branch.CommissionPercent,
+            branch.BKashNumber,
+            branch.BankAccountNumber,
+            branch.BankRoutingNumber);
+
+    private static IResult? NormalizeBranchPayoutFields(
+        string? bKashNumber,
+        string? bankAccountNumber,
+        string? bankRoutingNumber,
+        out string? bKash,
+        out string? bankAcct,
+        out string? bankRouting,
+        out string? error)
+    {
+        bKash = string.IsNullOrWhiteSpace(bKashNumber) ? null : bKashNumber.Trim();
+        bankAcct = string.IsNullOrWhiteSpace(bankAccountNumber) ? null : bankAccountNumber.Trim();
+        bankRouting = string.IsNullOrWhiteSpace(bankRoutingNumber) ? null : bankRoutingNumber.Trim();
+        error = null;
+
+        var hasAcct = !string.IsNullOrEmpty(bankAcct);
+        var hasRouting = !string.IsNullOrEmpty(bankRouting);
+        if (hasAcct != hasRouting)
+        {
+            error = "Bank account number and routing number must both be provided or both left empty.";
+            return Results.BadRequest(new { error });
+        }
+
+        return null;
+    }
 
     private static bool TryParseSettlementType(string? value, out BranchSettlementType type, out string? error)
     {

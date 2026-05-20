@@ -11,6 +11,10 @@ public class Branch
     public BranchSettlementType SettlementType { get; set; } = BranchSettlementType.Normal;
     /// <summary>Commission % on shipping price for deliveries at this branch (destination role only).</summary>
     public decimal? CommissionPercent { get; set; }
+    /// <summary>bKash wallet number for admin-to-branch payouts.</summary>
+    public string? BKashNumber { get; set; }
+    public string? BankAccountNumber { get; set; }
+    public string? BankRoutingNumber { get; set; }
 
     public ICollection<User> Users { get; set; } = new List<User>();
     public ICollection<BranchSettlementPayment> SettlementPayments { get; set; } = new List<BranchSettlementPayment>();

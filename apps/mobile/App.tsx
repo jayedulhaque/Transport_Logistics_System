@@ -141,6 +141,69 @@ function branchLabel(b: BranchOption): string {
   return `${b.branchName} (${b.code})`;
 }
 
+const PAYMENT_METHODS = ['BKash', 'Cash', 'BankAccount'] as const;
+type PaymentMethodValue = (typeof PAYMENT_METHODS)[number];
+
+function paymentMethodLabel(method: PaymentMethodValue): string {
+  if (method === 'BankAccount') return 'Bank Account';
+  if (method === 'BKash') return 'bKash';
+  return method;
+}
+
+function PaymentMethodDropdown({
+  value,
+  onChange,
+}: {
+  value: PaymentMethodValue | null;
+  onChange: (method: PaymentMethodValue) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      <Pressable
+        onPress={() => setOpen(true)}
+        style={({ pressed }) => [styles.dropdown, pressed && styles.dropdownPressed]}
+      >
+        <Text style={[styles.dropdownText, !value && styles.dropdownPlaceholder]} numberOfLines={1}>
+          {value ? paymentMethodLabel(value) : 'Select payout method'}
+        </Text>
+        <Text style={styles.dropdownChevron}>▾</Text>
+      </Pressable>
+      <Modal visible={open} transparent animationType="fade" onRequestClose={() => setOpen(false)}>
+        <Pressable style={styles.dropdownBackdrop} onPress={() => setOpen(false)}>
+          <View style={styles.dropdownSheet} onStartShouldSetResponder={() => true}>
+            <Text style={styles.dropdownSheetTitle}>Preferred payout method</Text>
+            <ScrollView style={styles.dropdownList} keyboardShouldPersistTaps="handled">
+              {PAYMENT_METHODS.map((m) => {
+                const isSelected = m === value;
+                return (
+                  <Pressable
+                    key={m}
+                    onPress={() => {
+                      onChange(m);
+                      setOpen(false);
+                    }}
+                    style={[styles.dropdownOption, isSelected && styles.dropdownOptionSelected]}
+                  >
+                    <Text
+                      style={[
+                        styles.dropdownOptionText,
+                        isSelected && styles.dropdownOptionTextSelected,
+                      ]}
+                    >
+                      {paymentMethodLabel(m)}
+                    </Text>
+                  </Pressable>
+                );
+              })}
+            </ScrollView>
+          </View>
+        </Pressable>
+      </Modal>
+    </>
+  );
+}
+
 function BranchDropdown({
   branches,
   value,
@@ -212,6 +275,10 @@ type DriverProfileData = {
   branchId: number | null;
   branchName: string | null;
   isApproved: boolean;
+  preferredPaymentMethod: string | null;
+  bKashNumber: string | null;
+  bankAccountNumber: string | null;
+  bankRoutingNumber: string | null;
 };
 
 type DriverEarningsData = {
@@ -670,6 +737,10 @@ function DriverProfile({
   const [phone, setPhone] = useState('');
   const [vehicle, setVehicle] = useState('');
   const [branchId, setBranchId] = useState<number | null>(null);
+  const [paymentMethod, setPaymentMethod] = useState<PaymentMethodValue | null>(null);
+  const [bKashNumber, setBKashNumber] = useState('');
+  const [bankAccountNumber, setBankAccountNumber] = useState('');
+  const [bankRoutingNumber, setBankRoutingNumber] = useState('');
   const [branches, setBranches] = useState<BranchOption[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -687,6 +758,11 @@ function DriverProfile({
       setPhone(p.phone);
       setVehicle(p.vehicleNumber);
       setBranchId(p.branchId);
+      const pref = p.preferredPaymentMethod as PaymentMethodValue | null;
+      setPaymentMethod(pref && PAYMENT_METHODS.includes(pref) ? pref : null);
+      setBKashNumber(p.bKashNumber ?? '');
+      setBankAccountNumber(p.bankAccountNumber ?? '');
+      setBankRoutingNumber(p.bankRoutingNumber ?? '');
     } else {
       Alert.alert('Error', 'Could not load profile.');
     }
@@ -710,6 +786,24 @@ function DriverProfile({
       Alert.alert('Validation', 'Select your home branch.');
       return;
     }
+    if (!paymentMethod) {
+      Alert.alert('Validation', 'Select your preferred payout method (bKash, cash, or bank account).');
+      return;
+    }
+    if (paymentMethod === 'BKash' && !bKashNumber.trim()) {
+      Alert.alert('Validation', 'Enter your bKash number.');
+      return;
+    }
+    if (paymentMethod === 'BankAccount') {
+      if (!bankAccountNumber.trim()) {
+        Alert.alert('Validation', 'Enter your bank account number.');
+        return;
+      }
+      if (!bankRoutingNumber.trim()) {
+        Alert.alert('Validation', 'Enter your bank routing number.');
+        return;
+      }
+    }
     setSaving(true);
     const res = await apiFetch('/api/drivers/me/profile', {
       method: 'PATCH',
@@ -717,6 +811,10 @@ function DriverProfile({
         phone: normalizeMobile(phone),
         vehicleNumber: vehicle.trim(),
         branchId,
+        preferredPaymentMethod: paymentMethod,
+        bKashNumber: paymentMethod === 'BKash' ? bKashNumber.trim() : null,
+        bankAccountNumber: paymentMethod === 'BankAccount' ? bankAccountNumber.trim() : null,
+        bankRoutingNumber: paymentMethod === 'BankAccount' ? bankRoutingNumber.trim() : null,
       }),
     }, token);
     setSaving(false);
@@ -730,6 +828,11 @@ function DriverProfile({
     setPhone(updated.phone);
     setVehicle(updated.vehicleNumber);
     setBranchId(updated.branchId);
+    const pref = updated.preferredPaymentMethod as PaymentMethodValue | null;
+    setPaymentMethod(pref && PAYMENT_METHODS.includes(pref) ? pref : null);
+    setBKashNumber(updated.bKashNumber ?? '');
+    setBankAccountNumber(updated.bankAccountNumber ?? '');
+    setBankRoutingNumber(updated.bankRoutingNumber ?? '');
     Alert.alert('Saved', 'Profile updated.');
   };
 
@@ -771,6 +874,51 @@ function DriverProfile({
       ) : (
         <BranchDropdown branches={branches} value={branchId} onChange={setBranchId} />
       )}
+      <Text style={styles.label}>Preferred payout method</Text>
+      <PaymentMethodDropdown
+        value={paymentMethod}
+        onChange={(m) => {
+          setPaymentMethod(m);
+          if (m !== 'BKash') setBKashNumber('');
+          if (m !== 'BankAccount') {
+            setBankAccountNumber('');
+            setBankRoutingNumber('');
+          }
+        }}
+      />
+      {paymentMethod === 'BKash' && (
+        <>
+          <Text style={styles.label}>bKash number</Text>
+          <TextInput
+            style={styles.input}
+            value={bKashNumber}
+            onChangeText={setBKashNumber}
+            keyboardType="phone-pad"
+            placeholder="01XXXXXXXXX"
+          />
+        </>
+      )}
+      {paymentMethod === 'BankAccount' && (
+        <>
+          <Text style={styles.label}>Bank routing number</Text>
+          <TextInput
+            style={styles.input}
+            value={bankRoutingNumber}
+            onChangeText={setBankRoutingNumber}
+            autoCapitalize="none"
+          />
+          <Text style={styles.label}>Bank account number</Text>
+          <TextInput
+            style={styles.input}
+            value={bankAccountNumber}
+            onChangeText={setBankAccountNumber}
+            autoCapitalize="none"
+          />
+        </>
+      )}
+      <Text style={styles.sub}>
+        Branch managers pay your trip earnings using this method.
+      </Text>
       <Text style={styles.sub}>
         Status: {profile.isApproved ? 'Approved' : 'Pending approval'}
         {profile.branchName ? ` · ${profile.branchName}` : ''}

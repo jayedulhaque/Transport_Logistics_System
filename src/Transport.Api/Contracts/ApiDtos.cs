@@ -122,7 +122,10 @@ public record UpsertBranchRequest(
     string Code,
     string Address,
     string SettlementType,
-    decimal? CommissionPercent);
+    decimal? CommissionPercent,
+    string? BKashNumber,
+    string? BankAccountNumber,
+    string? BankRoutingNumber);
 
 public record BranchDto(
     int Id,
@@ -130,7 +133,10 @@ public record BranchDto(
     string Code,
     string Address,
     string SettlementType,
-    decimal? CommissionPercent);
+    decimal? CommissionPercent,
+    string? BKashNumber,
+    string? BankAccountNumber,
+    string? BankRoutingNumber);
 
 public record BranchSettlementPaymentDto(
     int Id,
@@ -140,6 +146,7 @@ public record BranchSettlementPaymentDto(
     DateTime CreatedAt,
     string RecordedByName,
     string Status,
+    string PaymentMethod,
     string? BranchName = null);
 
 public record BranchSettlementDto(
@@ -147,6 +154,9 @@ public record BranchSettlementDto(
     string BranchName,
     string SettlementType,
     decimal? CommissionPercent,
+    string? BKashNumber,
+    string? BankAccountNumber,
+    string? BankRoutingNumber,
     decimal CollectedAsOrigin,
     decimal CollectedAsDestination,
     decimal DestinationShippingTotal,
@@ -159,7 +169,7 @@ public record BranchSettlementDto(
     decimal DueFromAdmin,
     IReadOnlyList<BranchSettlementPaymentDto> RecentPayments);
 
-public record RecordBranchSettlementPaymentRequest(decimal Amount, string Direction, string? Note);
+public record RecordBranchSettlementPaymentRequest(decimal Amount, string Direction, string PaymentMethod, string? Note);
 
 public record PendingDriverDto(
     int Id,
@@ -232,6 +242,10 @@ public record DriverEarningsRowDto(
     string VehicleNumber,
     int? BranchId,
     string? BranchName,
+    string? PreferredPaymentMethod,
+    string? BKashNumber,
+    string? BankAccountNumber,
+    string? BankRoutingNumber,
     decimal AccruedTripEarnings,
     decimal PaidToDriver,
     decimal Due);
@@ -239,9 +253,10 @@ public record DriverEarningsRowDto(
 public record DriverMyEarningsDto(
     decimal AccruedTripEarnings,
     decimal PaidToDriver,
-    decimal Due);
+    decimal Due,
+    string? PreferredPaymentMethod);
 
-public record PayDriverEarningsRequest(decimal Amount);
+public record PayDriverEarningsRequest(decimal Amount, string PaymentMethod);
 
 public record StaffListItemDto(
     int Id,
@@ -267,9 +282,20 @@ public record DriverProfileDto(
     string VehicleNumber,
     int? BranchId,
     string? BranchName,
-    bool IsApproved);
+    bool IsApproved,
+    string? PreferredPaymentMethod,
+    string? BKashNumber,
+    string? BankAccountNumber,
+    string? BankRoutingNumber);
 
-public record UpdateDriverRequest(string Phone, string VehicleNumber, int BranchId);
+public record UpdateDriverRequest(
+    string Phone,
+    string VehicleNumber,
+    int BranchId,
+    string? PreferredPaymentMethod,
+    string? BKashNumber = null,
+    string? BankAccountNumber = null,
+    string? BankRoutingNumber = null);
 
 public record PresenceRequest(bool IsOnline);
 
